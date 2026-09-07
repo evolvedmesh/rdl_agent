@@ -13,9 +13,10 @@ name: build
 #
 # Triggers:
 #   - `workflow_call` with `tag`  — how release.yml invokes it after a release is cut.
-#         (A tag/release created with the default GITHUB_TOKEN cannot start a workflow
-#         on its own, so this is a direct call rather than a `release`/`push: tags`
-#         trigger.)
+#         (A direct call rather than a `release`/`push: tags` trigger, so exactly one
+#         build runs per release and it is the one release.yml asked for. Do not add a
+#         tag trigger: release.yml now tags as a GitHub App, whose tags DO start
+#         workflows, so a tag trigger would double-build every release.)
 #   - `workflow_dispatch`  — manual; give a `tag` to also upload onto that release,
 #         leave it blank to just produce the artifacts.
 

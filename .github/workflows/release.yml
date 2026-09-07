@@ -15,8 +15,17 @@ name: release
 # When it publishes, this workflow then calls build.yml for that exact tag, which
 # compiles the per-platform binaries, bundles each with poppler + ImageMagick for
 # THAT platform, and attaches the archives to the same Release. (Done as a
-# `workflow_call`, not a tag-push trigger: a tag/release created with the default
-# GITHUB_TOKEN does not start other workflows.)
+# `workflow_call`, not a tag-push trigger, so the hand-off is explicit and cannot
+# fan out into a second build.)
+#
+# It authenticates as the `evolvedmesh-release-bot` GitHub App, NOT as GITHUB_TOKEN.
+# The org rulesets on main and dev require a pull request and forbid ref updates; the
+# App is a bypass actor on both, so its release commit and tag are the only direct
+# pushes those branches accept. With GITHUB_TOKEN the push is rejected with GH013.
+#
+# Because an App token — unlike GITHUB_TOKEN — *does* start other workflows, the
+# `[skip ci]` on the release commit's first line (see `message` in .releaserc.json) is
+# load-bearing: without it, pushing that commit back would retrigger this workflow.
 
 on:
   push:
@@ -40,6 +49,14 @@ jobs:
       released: ${{ steps.tag.outputs.released }}
       tag: ${{ steps.tag.outputs.tag }}
     steps:
+      # Mints a short-lived installation token for evolvedmesh-release-bot, scoped to
+      # this repo. Expires when the job ends.
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0          # semantic-release needs full history + tags
@@ -57,9 +74,11 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      # semantic-release builds its own push URL from this token (it does not use the
+      # checkout credentials), so the App identity here is what clears the rulesets.
       - run: npx --no-install semantic-release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
       # @semantic-release/git moves HEAD to the release commit and tags it, so a tag
       # on HEAD means "released this run"; no tag means "no relevant changes".
