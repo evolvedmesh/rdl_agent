@@ -1,0 +1,34 @@
+name: check
+
+# Runs on every push to a topic branch (anything that is not the trunk) and on PRs
+# into it. Keeps `main`/`master` out — the trunk is assumed already-green from the PR
+# that merged into it.
+on:
+  push:
+    branches-ignore: [main, master]
+  pull_request:
+    branches: [main, master]
+
+# One run per ref; a new push cancels the previous run for the same branch.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - run: bun install --frozen-lockfile
+
+      # biome lint + check + format, all read-only (see the `check` script).
+      - run: bun run check
+
+      # Not part of `check`, but a lint gate that skips the type checker is only half a
+      # gate. Drop this step if you only want biome.
+      - run: bun run typecheck

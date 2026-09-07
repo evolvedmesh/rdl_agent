@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+.env.*
+*.local.json
+confidential.json
+secrets.json
+
+# spike working state — renders, PDFs, images, measurement output
+.spike/
+out/
+*.pdf
+*.png
+
+# …but the test fixtures are checked in, so the suite runs anywhere (incl. CI)
+!test/fixtures/**

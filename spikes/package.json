@@ -1,0 +1,13 @@
+{
+	"name": "@rdla/spikes",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"selftest": "bun bin/selftest.ts",
+		"s1": "bun bin/s1-latency.ts",
+		"s2:mcp": "bun bin/s2-mcp.ts",
+		"s2:reset": "bun bin/s2-reset.ts",
+		"s2:report": "bun bin/s2-report.ts"
+	}
+}

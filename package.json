@@ -1,0 +1,43 @@
+{
+	"name": "rdl-agent-workspace",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"workspaces": [
+		"packages/*",
+		"apps/*",
+		"spikes"
+	],
+	"devDependencies": {
+		"@biomejs/biome": "2.5.12",
+		"@semantic-release/changelog": "^7.0.0",
+		"@semantic-release/git": "^11.0.1",
+		"@types/bun": "latest",
+		"@types/react": "^19.2.18",
+		"semantic-release": "^25.0.9"
+	},
+	"peerDependencies": {
+		"typescript": "^7.0.2"
+	},
+	"scripts": {
+		"test": "bun test",
+		"typecheck": "tsc --noEmit",
+		"desktop": "bun apps/desktop/src/main.tsx",
+		"server": "bun packages/server/src/index.ts",
+		"check": "biome lint ./ && biome check ./ && biome format ./",
+		"fix": "biome format ./ --write && biome check ./ --write",
+		"release": "semantic-release",
+		"release:dry": "semantic-release --dry-run --no-ci",
+		"build": "bun build --compile --minify apps/desktop/src/main.tsx --outfile dist/layout-agent",
+		"build:linux-x64": "bun build --compile --minify --target=bun-linux-x64 apps/desktop/src/main.tsx --outfile dist/layout-agent-linux-x64",
+		"build:macos-arm64": "bun build --compile --minify --target=bun-darwin-arm64 apps/desktop/src/main.tsx --outfile dist/layout-agent-macos-arm64",
+		"build:windows-x64": "bun build --compile --minify --target=bun-windows-x64 --windows-hide-console apps/desktop/src/main.tsx --outfile dist/layout-agent-windows-x64.exe",
+		"build:all": "bun run build:linux-x64 && bun run build:macos-arm64 && bun run build:windows-x64"
+	},
+	"//build": "One binary IS the whole app: GUI by default, `<app> mcp-shim …` (it re-execs itself, so agent sessions work with no extra files) and `<app> serve` for headless. It still needs poppler-utils + ImageMagick for PDF text/raster feedback — off PATH, or in a `bin/` folder next to the binary, or via $LAYOUT_TOOLS_DIR (embedding those is a separate packaging job: both are heavily dynamically linked). GPUIX ships a native addon per platform and Bun only embeds the one it can resolve at build time, so build:macos-arm64 / build:windows-x64 produce a loadable binary only when run on that OS (or a CI runner with its @gpuix/native-*) — from the wrong host they exit 0 but cannot open a window. `build` (no target) is the always-correct host build.",
+	"dependencies": {
+		"@gpuix/native": "^0.7.0",
+		"@gpuix/react": "^0.7.0",
+		"react": "^19.2.8"
+	}
+}

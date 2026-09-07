@@ -1,0 +1,325 @@
+name: build
+
+# Produces a self-contained bundle per desktop platform, and attaches it to the release:
+#   rdl-agent            the compiled app (GUI / `serve` / `mcp-shim`, all in one file)
+#   bin/                 poppler-utils + ImageMagick FOR THAT PLATFORM, libraries vendored
+#   README.md            how to run it
+# packaged as rdl-agent-<platform>.tar.gz (Linux/macOS) or .zip (Windows).
+#
+# Each leg runs on its native runner: `bun install` there pulls that platform's
+# @gpuix/native-*, and the PDF tools are that OS's own build (apt / brew / choco). The
+# smoke test then runs the bundled tools against a fixture PDF, so a bundle whose
+# vendored libraries are incomplete never reaches a release.
+#
+# Triggers:
+#   - `workflow_call` with `tag`  — how release.yml invokes it after a release is cut.
+#         (A tag/release created with the default GITHUB_TOKEN cannot start a workflow
+#         on its own, so this is a direct call rather than a `release`/`push: tags`
+#         trigger.)
+#   - `workflow_dispatch`  — manual; give a `tag` to also upload onto that release,
+#         leave it blank to just produce the artifacts.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to build for and attach assets to."
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build for and upload onto (blank = build artifacts only)."
+        required: false
+        default: ""
+
+concurrency:
+  group: build-${{ inputs.tag || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # One fast gate before the matrix compiles three binaries.
+  verify:
+    runs-on: ubuntu-latest
+    # Harmless for a normal binary; lets the portable ImageMagick run without FUSE.
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - name: PDF tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils
+          if ! magick -version >/dev/null 2>&1; then
+            sudo apt-get install -y --no-install-recommends imagemagick || true
+          fi
+          if ! magick -version >/dev/null 2>&1; then
+            # Ubuntu's apt ships ImageMagick 6, which has no `magick` command; the
+            # feedback code needs 7. Fall back to ImageMagick's official portable build.
+            curl -fsSL https://imagemagick.org/archive/binaries/magick -o /tmp/magick
+            chmod +x /tmp/magick
+            sudo mv /tmp/magick /usr/local/bin/magick
+          fi
+          magick -version >/dev/null
+      - run: bun run typecheck
+      - run: bun run check
+      - run: bun run test
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-x64
+            os: ubuntu-latest
+            script: build:linux-x64
+            binary: layout-agent-linux-x64
+            archive: tar
+          - id: macos-arm64
+            os: macos-14
+            script: build:macos-arm64
+            binary: layout-agent-macos-arm64
+            archive: tar
+          - id: windows-x64
+            os: windows-2022
+            script: build:windows-x64
+            binary: layout-agent-windows-x64.exe
+            archive: zip
+
+    runs-on: ${{ matrix.os }}
+    # Only meaningful on Linux (the bundled ImageMagick is an AppImage there); ignored
+    # elsewhere.
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - run: bun install --frozen-lockfile
+
+      - name: Compile the app binary
+        run: bun run ${{ matrix.script }}
+
+      # --- vendor poppler + ImageMagick into the bundle's bin/ ----------------------
+      # resolveTool() (packages/feedback/src/bin.ts) looks for these next to the app
+      # binary in `bin/`, so an offline drop works. Libraries are vendored too; the one
+      # system dependency left on each platform is its C runtime.
+
+      - name: Bundle tools (Linux)
+        if: matrix.id == 'linux-x64'
+        run: |
+          set -euo pipefail
+          out="rdl-agent-${{ matrix.id }}"
+          mkdir -p "$out/bin"
+          cp "dist/${{ matrix.binary }}" "$out/rdl-agent"
+          chmod +x "$out/rdl-agent"
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils patchelf
+
+          # poppler: copy the three tools and every shared lib they pull in, except the
+          # ABI floor (libc + the dynamic loader), then point each at its own dir.
+          for t in pdfinfo pdftotext pdftoppm; do
+            cp "$(command -v "$t")" "$out/bin/$t"
+          done
+          ( cd "$out/bin"
+            for t in pdfinfo pdftotext pdftoppm; do
+              ldd "$t" | awk '/=> \//{print $3}' | while read -r lib; do
+                case "$(basename "$lib")" in
+                  libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|librt.so.*|libresolv.so.*|ld-linux*) ;;
+                  *) cp -n "$lib" . 2>/dev/null || true ;;
+                esac
+              done
+              patchelf --set-rpath '$ORIGIN' "$t"
+            done )
+
+          # ImageMagick: its official portable build is already a single self-contained
+          # file, so no vendoring — just drop it in. (An AppImage; APPIMAGE_EXTRACT_AND_RUN
+          # is set job-wide so it runs without FUSE.)
+          curl -fsSL https://imagemagick.org/archive/binaries/magick -o "$out/bin/magick"
+          chmod +x "$out/bin/magick"
+
+      - name: Bundle tools (macOS)
+        if: matrix.id == 'macos-arm64'
+        run: |
+          set -euo pipefail
+          out="rdl-agent-${{ matrix.id }}"
+          mkdir -p "$out/bin"
+          cp "dist/${{ matrix.binary }}" "$out/rdl-agent"
+          chmod +x "$out/rdl-agent"
+
+          brew install poppler imagemagick dylibbundler
+
+          for t in pdfinfo pdftotext pdftoppm magick; do
+            cp "$(brew --prefix)/bin/$t" "$out/bin/$t"
+          done
+
+          # Rewrite each tool's dylib references to @executable_path/libs, copy them there.
+          ( cd "$out/bin"
+            for t in pdfinfo pdftotext pdftoppm magick; do
+              dylibbundler -of -cd -b -x "./$t" -d ./libs -p '@executable_path/libs'
+            done )
+
+      - name: Bundle tools (Windows)
+        if: matrix.id == 'windows-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = "rdl-agent-${{ matrix.id }}"
+          New-Item -ItemType Directory -Force -Path "$out/bin" | Out-Null
+          Copy-Item "dist/${{ matrix.binary }}" "$out/rdl-agent.exe"
+
+          choco install --no-progress -y poppler imagemagick.portable
+
+          # These Windows builds keep their DLLs beside the .exe. Copy from the real
+          # install dir under chocolatey\lib, not the shim in chocolatey\bin.
+          function ToolDir($lib, $exe) {
+            $hit = Get-ChildItem "C:\ProgramData\chocolatey\lib\$lib" -Recurse -Filter $exe -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $hit) { throw "$exe not found under chocolatey\lib\$lib" }
+            return $hit.DirectoryName
+          }
+          Copy-Item (Join-Path (ToolDir 'poppler' 'pdftoppm.exe') '*') "$out/bin/" -Recurse -Force
+          Copy-Item (Join-Path (ToolDir 'imagemagick.portable' 'magick.exe') '*') "$out/bin/" -Recurse -Force
+          foreach ($e in 'pdfinfo.exe','pdftotext.exe','pdftoppm.exe','magick.exe') {
+            if (-not (Test-Path "$out/bin/$e")) { throw "missing $e in bundle" }
+          }
+
+      - name: Bundle README
+        shell: bash
+        run: |
+          out="rdl-agent-${{ matrix.id }}"
+          bin="rdl-agent"; [ "${{ matrix.id }}" = "windows-x64" ] && bin="rdl-agent.exe"
+          cat > "$out/README.md" <<EOF
+          # RDL Agent — ${{ matrix.id }}
+
+          One binary, three entrypoints:
+
+              ./$bin                                  desktop app
+              ./$bin serve                            headless core (drive it from a browser)
+              ./$bin mcp-shim --stdio --session <id>  per-session MCP proxy (spawned by the agent)
+
+          \`bin/\` holds poppler-utils + ImageMagick with their libraries vendored, so
+          nothing extra is needed for rendering and page feedback. On Linux \`bin/magick\`
+          is ImageMagick's portable AppImage — if your box has no FUSE, export
+          \`APPIMAGE_EXTRACT_AND_RUN=1\` before launching. Agent sessions still need an ACP
+          agent CLI (Claude Code, opencode, …) on your PATH; it reuses your existing login.
+          EOF
+
+      # --- smoke test: the bundle boots, and its vendored poppler + ImageMagick run
+      #     standalone (relative-path invocation from inside bin/, so a broken rpath /
+      #     dylib / DLL fails HERE and the bundle never reaches a release) ------------
+      - name: Smoke test (Linux/macOS)
+        if: matrix.id != 'windows-x64'
+        run: |
+          set -euo pipefail
+          out="rdl-agent-${{ matrix.id }}"
+
+          LAYOUT_DATA_DIR="$(mktemp -d)" "./$out/rdl-agent" serve > serve.log 2>&1 &
+          pid=$!
+          port=""
+          for _ in $(seq 1 30); do
+            port=$(grep -oE 'localhost:[0-9]+' serve.log | head -1 | cut -d: -f2 || true)
+            [ -n "$port" ] && break
+            sleep 1
+          done
+          [ -n "$port" ] || { echo "no port reported"; cat serve.log; exit 1; }
+          curl -fsS "http://127.0.0.1:$port/api/state" > /dev/null
+          kill "$pid" 2>/dev/null || true
+          echo "app booted on :$port"
+
+          b="$out/bin"; pdf="test/fixtures/preview.pdf"; work="$(mktemp -d)"
+          "$b/pdfinfo" "$pdf" | grep -q '^Pages:'
+          test -n "$("$b/pdftotext" -layout "$pdf" -)"
+          "$b/pdftoppm" -png -r 72 -singlefile "$pdf" "$work/p"
+          test -s "$work/p.png"
+          "$b/magick" identify -format '%wx%h' "$work/p.png" | grep -Eq '^[0-9]+x[0-9]+$'
+          echo "bundled poppler + ImageMagick run standalone"
+
+      - name: Smoke test (Windows)
+        if: matrix.id == 'windows-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = "rdl-agent-windows-x64"
+
+          $env:LAYOUT_DATA_DIR = (New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP ([guid]::NewGuid()))).FullName
+          $p = Start-Process -FilePath "$out/rdl-agent.exe" -ArgumentList "serve" `
+                 -RedirectStandardOutput serve.log -RedirectStandardError serve.err -PassThru
+          $port = $null
+          foreach ($_ in 1..30) {
+            if (Test-Path serve.log) {
+              $m = Select-String -Path serve.log -Pattern 'localhost:(\d+)' | Select-Object -First 1
+              if ($m) { $port = $m.Matches[0].Groups[1].Value; break }
+            }
+            Start-Sleep 1
+          }
+          if (-not $port) { Get-Content serve.log, serve.err -ErrorAction SilentlyContinue; throw "no port reported" }
+          Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/api/state" | Out-Null
+          Stop-Process -Id $p.Id -Force
+          Write-Host "app booted on :$port"
+
+          $b = "$out\bin"; $pdf = "test\fixtures\preview.pdf"
+          $work = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP ([guid]::NewGuid()))
+          $info = & "$b\pdfinfo.exe" $pdf
+          if ($LASTEXITCODE -or ($info -notmatch 'Pages:')) { throw "pdfinfo.exe failed" }
+          & "$b\pdftotext.exe" -layout $pdf - | Out-Null
+          if ($LASTEXITCODE) { throw "pdftotext.exe failed" }
+          & "$b\pdftoppm.exe" -png -r 72 -singlefile $pdf (Join-Path $work "p")
+          if ($LASTEXITCODE -or -not (Test-Path (Join-Path $work "p.png"))) { throw "pdftoppm.exe failed" }
+          $dim = & "$b\magick.exe" identify -format '%wx%h' (Join-Path $work "p.png")
+          if ($LASTEXITCODE -or ($dim -notmatch '^\d+x\d+$')) { throw "magick.exe identify failed: $dim" }
+          Write-Host "bundled poppler + ImageMagick run standalone"
+
+      # --- archive + upload ------------------------------------------------------
+      - name: Archive (tar.gz)
+        if: matrix.archive == 'tar'
+        run: tar -czf "rdl-agent-${{ matrix.id }}.tar.gz" "rdl-agent-${{ matrix.id }}"
+
+      - name: Archive (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: Compress-Archive -Path "rdl-agent-${{ matrix.id }}" -DestinationPath "rdl-agent-${{ matrix.id }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rdl-agent-${{ matrix.id }}
+          path: |
+            rdl-agent-${{ matrix.id }}.tar.gz
+            rdl-agent-${{ matrix.id }}.zip
+          if-no-files-found: error
+
+  # Attach the three bundles to the GitHub Release semantic-release (release.yml)
+  # already created for this tag. It owns the notes; we only add assets. Skipped for a
+  # bare `workflow_dispatch` with no tag (build-artifacts-only).
+  release:
+    needs: build
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: artifacts/*
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+          # `-dev.N` tags are prereleases; matches what semantic-release already set.
+          prerelease: ${{ contains(inputs.tag, '-') }}
