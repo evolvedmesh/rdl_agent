@@ -1,3 +1,10 @@
+# [0.1.0-dev.3](https://github.com/evolvedmesh/rdl_agent/compare/v0.1.0-dev.2...v0.1.0-dev.3) (2026-09-07)
+
+
+### Bug Fixes
+
+* **build:** replace ImageMagick installation from Chocolatey with direct download of portable version ([57c09a6](https://github.com/evolvedmesh/rdl_agent/commit/57c09a6308e8a4347cc848a329abba592e608a7a))
+
 # [0.1.0-dev.2](https://github.com/evolvedmesh/rdl_agent/compare/v0.1.0-dev.1...v0.1.0-dev.2) (2026-09-07)
 
 
