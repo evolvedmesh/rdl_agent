@@ -1,3 +1,10 @@
+# [0.1.0-dev.2](https://github.com/evolvedmesh/rdl_agent/compare/v0.1.0-dev.1...v0.1.0-dev.2) (2026-09-07)
+
+
+### Bug Fixes
+
+* **build:** update ImageMagick download URL to use versioned GitHub release asset ([346346e](https://github.com/evolvedmesh/rdl_agent/commit/346346e24a29731be0f127ddb8a7421196151c0b))
+
 # [0.1.0-dev.1](https://github.com/evolvedmesh/rdl_agent/compare/v0.0.0...v0.1.0-dev.1) (2026-09-07)
 
 
