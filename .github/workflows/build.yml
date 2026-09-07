@@ -162,9 +162,9 @@ jobs:
 
       - name: Bundle tools (macOS)
         if: matrix.id == 'macos-arm64'
-        # dylibbundler blocks on an interactive prompt when a lookup fails (see below),
-        # so bound it: a hang here otherwise burns the job's full 6-hour ceiling.
-        timeout-minutes: 15
+        # Builds ImageMagick from source (below), and dylibbundler blocks on an
+        # interactive prompt when a lookup fails, so bound the step on both counts.
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           out="rdl-agent-${{ matrix.id }}"
@@ -172,11 +172,45 @@ jobs:
           cp "dist/${{ matrix.binary }}" "$out/rdl-agent"
           chmod +x "$out/rdl-agent"
 
-          brew install poppler imagemagick dylibbundler
+          brew install poppler dylibbundler libpng
 
-          for t in pdfinfo pdftotext pdftoppm magick; do
+          # ImageMagick is built here rather than taken from Homebrew, whose formula
+          # configures it --with-modules. The coders are then dlopen'd .so files, and
+          # dylibbundler only rewrites *linked* dylibs — so a bundled copy of Homebrew's
+          # build ships with no coders at all and fails with "no decode delegate for
+          # this image format" on every PNG. --without-modules links the coders into the
+          # binary: that is what makes the bundle self-contained, and it gives
+          # dylibbundler the same shape it already handles for poppler.
+          #
+          # Only PNG and zlib are enabled. The feedback code reads and writes nothing
+          # else (identify + -crop on PNGs; see packages/feedback/src/pdf.ts). The
+          # deny-list is explicit rather than relying on defaults because configure
+          # auto-detects whatever happens to be installed on the runner and links it in,
+          # which would make the bundle's contents vary by runner image. Dropping
+          # Magick++ and the delegates also takes the build down to well under a minute.
+          # Same pinned version as the Linux AppImage and the Windows portable build.
+          src="$RUNNER_TEMP/im-src"; im="$RUNNER_TEMP/im"
+          mkdir -p "$src"
+          curl -fsSL "https://github.com/ImageMagick/ImageMagick/releases/download/${IMAGEMAGICK_VERSION}/ImageMagick-${IMAGEMAGICK_VERSION}.tar.xz" \
+            | tar -xJ -C "$src" --strip-components=1
+          ( cd "$src"
+            ./configure --prefix="$im" \
+              --disable-shared --without-modules --disable-docs \
+              --without-x --without-perl --without-magick-plus-plus \
+              --with-png --with-zlib \
+              --without-bzlib --without-djvu --without-dmr --without-fontconfig \
+              --without-freetype --without-heic --without-jbig --without-jpeg \
+              --without-jxl --without-lcms --without-lqr --without-lzma \
+              --without-openexr --without-openjp2 --without-pango --without-raqm \
+              --without-raw --without-tiff --without-webp --without-xml \
+              --without-zip --without-zstd
+            make -j"$(sysctl -n hw.ncpu)"
+            make install )
+
+          for t in pdfinfo pdftotext pdftoppm; do
             cp "$(brew --prefix)/bin/$t" "$out/bin/$t"
           done
+          cp "$im/bin/magick" "$out/bin/magick"
 
           # Rewrite each tool's dylib references to @executable_path/libs, copy them there.
           #
