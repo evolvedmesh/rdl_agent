@@ -190,9 +190,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$out/bin" | Out-Null
           Copy-Item "dist/${{ matrix.binary }}" "$out/rdl-agent.exe"
 
-          choco install --no-progress -y poppler imagemagick.portable
+          choco install --no-progress -y poppler
 
-          # These Windows builds keep their DLLs beside the .exe. Copy from the real
+          # poppler's Windows build keeps its DLLs beside the .exe. Copy from the real
           # install dir under chocolatey\lib, not the shim in chocolatey\bin.
           function ToolDir($lib, $exe) {
             $hit = Get-ChildItem "C:\ProgramData\chocolatey\lib\$lib" -Recurse -Filter $exe -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -200,7 +200,28 @@ jobs:
             return $hit.DirectoryName
           }
           Copy-Item (Join-Path (ToolDir 'poppler' 'pdftoppm.exe') '*') "$out/bin/" -Recurse -Force
-          Copy-Item (Join-Path (ToolDir 'imagemagick.portable' 'magick.exe') '*') "$out/bin/" -Recurse -Force
+
+          # ImageMagick comes from the same pinned release as the Linux leg, not from
+          # Chocolatey: `imagemagick.portable` no longer exists on the community feed.
+          # The portable build's magick.exe is fully self-contained (every tool in the
+          # archive is the same 31MB static binary), so only it and the configuration
+          # XML ship — `magick identify` covers what the feedback code needs.
+          $ver    = $env:IMAGEMAGICK_VERSION
+          $sevenZ = Join-Path $env:RUNNER_TEMP 'imagemagick.7z'
+          $imDir  = Join-Path $env:RUNNER_TEMP 'imagemagick'
+          curl.exe -fsSL "https://github.com/ImageMagick/ImageMagick/releases/download/$ver/ImageMagick-$ver-portable-Q16-HDRI-x64.7z" -o $sevenZ
+          if ($LASTEXITCODE) { throw "ImageMagick download failed ($LASTEXITCODE)" }
+          $sz = 'C:\Program Files\7-Zip\7z.exe'
+          if (-not (Test-Path $sz)) {
+            $cmd = Get-Command 7z -ErrorAction SilentlyContinue
+            if (-not $cmd) { throw "7-Zip not found" }
+            $sz = $cmd.Source
+          }
+          & $sz x $sevenZ "-o$imDir" -y | Out-Null
+          if ($LASTEXITCODE) { throw "ImageMagick extract failed ($LASTEXITCODE)" }
+          Copy-Item "$imDir\magick.exe" "$out/bin/"
+          Copy-Item "$imDir\*.xml" "$out/bin/"
+          Copy-Item "$imDir\*.icc" "$out/bin/"
           foreach ($e in 'pdfinfo.exe','pdftotext.exe','pdftoppm.exe','magick.exe') {
             if (-not (Test-Path "$out/bin/$e")) { throw "missing $e in bundle" }
           }
@@ -235,7 +256,12 @@ jobs:
           set -euo pipefail
           out="rdl-agent-${{ matrix.id }}"
 
-          LAYOUT_DATA_DIR="$(mktemp -d)" "./$out/rdl-agent" serve > serve.log 2>&1 &
+          # `serve` refuses to start without somewhere to keep the client secret, and a
+          # CI runner has no keychain (no secret-tool on Linux; no Windows backend at
+          # all — see defaultSecretStore in packages/core/src/credentials.ts). This is
+          # that documented opt-in: the data dir is a throwaway temp dir and the smoke
+          # test never stores a credential, so no secret is ever written.
+          LAYOUT_DATA_DIR="$(mktemp -d)" LAYOUT_ALLOW_PLAINTEXT_SECRET=1 "./$out/rdl-agent" serve > serve.log 2>&1 &
           pid=$!
           port=""
           for _ in $(seq 1 30); do
@@ -264,6 +290,9 @@ jobs:
           $out = "rdl-agent-windows-x64"
 
           $env:LAYOUT_DATA_DIR = (New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP ([guid]::NewGuid()))).FullName
+          # Windows has no keychain backend at all, so this is required, not just
+          # convenient. See the Linux/macOS smoke test for why it is safe here.
+          $env:LAYOUT_ALLOW_PLAINTEXT_SECRET = "1"
           $p = Start-Process -FilePath "$out/rdl-agent.exe" -ArgumentList "serve" `
                  -RedirectStandardOutput serve.log -RedirectStandardError serve.err -PassThru
           $port = $null
