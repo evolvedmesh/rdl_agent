@@ -1,3 +1,10 @@
+# [0.1.0-dev.5](https://github.com/evolvedmesh/rdl_agent/compare/v0.1.0-dev.4...v0.1.0-dev.5) (2026-09-07)
+
+
+### Bug Fixes
+
+* **build:** increase timeout for macOS bundle step and build ImageMagick from source for self-contained binaries ([78ed1a5](https://github.com/evolvedmesh/rdl_agent/commit/78ed1a5071c98aaf1d09b693cb3749facc10d1c8))
+
 # [0.1.0-dev.4](https://github.com/evolvedmesh/rdl_agent/compare/v0.1.0-dev.3...v0.1.0-dev.4) (2026-09-07)
 
 
