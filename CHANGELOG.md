@@ -1,3 +1,10 @@
+# [0.1.0-dev.4](https://github.com/evolvedmesh/rdl_agent/compare/v0.1.0-dev.3...v0.1.0-dev.4) (2026-09-07)
+
+
+### Bug Fixes
+
+* **build:** increase timeout for dylibbundler to prevent CI hang and improve pdfinfo error handling ([a4096e8](https://github.com/evolvedmesh/rdl_agent/commit/a4096e838bd5ef574da01bcb9ea5b08094efa125))
+
 # [0.1.0-dev.3](https://github.com/evolvedmesh/rdl_agent/compare/v0.1.0-dev.2...v0.1.0-dev.3) (2026-09-07)
 
 
