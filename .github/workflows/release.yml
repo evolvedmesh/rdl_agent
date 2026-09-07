@@ -1,0 +1,80 @@
+name: release
+
+# semantic-release owns versioning and the GitHub Release. It runs on the two
+# release branches:
+#   main  ->  stable        v1.2.3
+#   dev   ->  prerelease    v1.2.3-dev.1   (see `prerelease: "dev"` in .releaserc.json)
+#
+# On each run it analyses conventional-commit messages since the last tag, and if a
+# release is warranted it:
+#   - bumps the version in package.json
+#   - writes CHANGELOG.md
+#   - commits both back to the branch with `[skip ci]`
+#   - creates the git tag (vX.Y.Z / vX.Y.Z-dev.N) and a GitHub Release
+#
+# When it publishes, this workflow then calls build.yml for that exact tag, which
+# compiles the per-platform binaries, bundles each with poppler + ImageMagick for
+# THAT platform, and attaches the archives to the same Release. (Done as a
+# `workflow_call`, not a tag-push trigger: a tag/release created with the default
+# GITHUB_TOKEN does not start other workflows.)
+
+on:
+  push:
+    branches: [main, dev]
+
+# Never cancel a release mid-flight; queue instead.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write      # push the release commit + tag, create the Release
+  issues: write        # semantic-release comments on fixed issues
+  pull-requests: write # ...and on the PRs that delivered them
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      # Set when semantic-release actually cut a release this run.
+      released: ${{ steps.tag.outputs.released }}
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # semantic-release needs full history + tags
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      # semantic-release is a Node CLI; Bun installs it but does not run it.
+      # semantic-release v25 needs Node ^22.14 || >=24.10.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: bun install --frozen-lockfile
+
+      - run: npx --no-install semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # @semantic-release/git moves HEAD to the release commit and tags it, so a tag
+      # on HEAD means "released this run"; no tag means "no relevant changes".
+      - id: tag
+        run: |
+          t="$(git tag --points-at HEAD | head -1)"
+          echo "tag=$t" >> "$GITHUB_OUTPUT"
+          echo "released=$([ -n "$t" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  # Build + bundle + attach the per-platform archives to the release just published.
+  bundle:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}
