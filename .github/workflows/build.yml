@@ -162,6 +162,9 @@ jobs:
 
       - name: Bundle tools (macOS)
         if: matrix.id == 'macos-arm64'
+        # dylibbundler blocks on an interactive prompt when a lookup fails (see below),
+        # so bound it: a hang here otherwise burns the job's full 6-hour ceiling.
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           out="rdl-agent-${{ matrix.id }}"
@@ -176,9 +179,16 @@ jobs:
           done
 
           # Rewrite each tool's dylib references to @executable_path/libs, copy them there.
+          #
+          # -s is not optional: these binaries reference their siblings through @rpath
+          # (e.g. @rpath/libpoppler.163.dylib), which dylibbundler cannot resolve on its
+          # own. On a miss it does not fail — it PROMPTS on stdin for the path, so in CI
+          # the step hangs until the job is killed rather than reporting an error.
+          # Pointing it at Homebrew's lib dir is what keeps this non-interactive.
           ( cd "$out/bin"
             for t in pdfinfo pdftotext pdftoppm magick; do
-              dylibbundler -of -cd -b -x "./$t" -d ./libs -p '@executable_path/libs'
+              dylibbundler -of -cd -b -x "./$t" -d ./libs -p '@executable_path/libs' \
+                -s "$(brew --prefix)/lib"
             done )
 
       - name: Bundle tools (Windows)
@@ -310,8 +320,15 @@ jobs:
 
           $b = "$out\bin"; $pdf = "test\fixtures\preview.pdf"
           $work = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP ([guid]::NewGuid()))
+          # `$info` is pdfinfo's ~20 output lines. Against an array, PowerShell's
+          # -match/-notmatch FILTER rather than return a boolean: `$info -notmatch
+          # 'Pages:'` yields the 19 lines that don't match, and a non-empty array is
+          # truthy — so the old check threw even when pdfinfo worked. `-not ($info
+          # -match ...)` is the array-safe form (empty result = no match = throw).
           $info = & "$b\pdfinfo.exe" $pdf
-          if ($LASTEXITCODE -or ($info -notmatch 'Pages:')) { throw "pdfinfo.exe failed" }
+          if ($LASTEXITCODE -or -not ($info -match '^Pages:')) {
+            throw "pdfinfo.exe failed (exit $LASTEXITCODE): $($info -join ' / ')"
+          }
           & "$b\pdftotext.exe" -layout $pdf - | Out-Null
           if ($LASTEXITCODE) { throw "pdftotext.exe failed" }
           & "$b\pdftoppm.exe" -png -r 72 -singlefile $pdf (Join-Path $work "p")
