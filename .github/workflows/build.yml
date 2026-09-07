@@ -38,6 +38,13 @@ concurrency:
   group: build-${{ inputs.tag || github.ref }}
   cancel-in-progress: true
 
+# ImageMagick's portable AppImage, pinned. `imagemagick.org/archive/binaries/magick`
+# was a floating "latest" URL and started 404ing (it moved to download.imagemagick.org);
+# a release pipeline should not depend on a binary that can move or change under it, so
+# this points at a versioned GitHub release asset instead. Bump this one line to update.
+env:
+  IMAGEMAGICK_VERSION: "7.1.2-31"
+
 jobs:
   # One fast gate before the matrix compiles three binaries.
   verify:
@@ -64,7 +71,7 @@ jobs:
           if ! magick -version >/dev/null 2>&1; then
             # Ubuntu's apt ships ImageMagick 6, which has no `magick` command; the
             # feedback code needs 7. Fall back to ImageMagick's official portable build.
-            curl -fsSL https://imagemagick.org/archive/binaries/magick -o /tmp/magick
+            curl -fsSL "https://github.com/ImageMagick/ImageMagick/releases/download/${IMAGEMAGICK_VERSION}/ImageMagick-${IMAGEMAGICK_VERSION}-gcc-x86_64.AppImage" -o /tmp/magick
             chmod +x /tmp/magick
             sudo mv /tmp/magick /usr/local/bin/magick
           fi
@@ -150,7 +157,7 @@ jobs:
           # ImageMagick: its official portable build is already a single self-contained
           # file, so no vendoring — just drop it in. (An AppImage; APPIMAGE_EXTRACT_AND_RUN
           # is set job-wide so it runs without FUSE.)
-          curl -fsSL https://imagemagick.org/archive/binaries/magick -o "$out/bin/magick"
+          curl -fsSL "https://github.com/ImageMagick/ImageMagick/releases/download/${IMAGEMAGICK_VERSION}/ImageMagick-${IMAGEMAGICK_VERSION}-gcc-x86_64.AppImage" -o "$out/bin/magick"
           chmod +x "$out/bin/magick"
 
       - name: Bundle tools (macOS)
