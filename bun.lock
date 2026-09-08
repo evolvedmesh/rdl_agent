@@ -24,6 +24,7 @@
         "@types/react": "^19.2.18",
         "@types/react-dom": "^19.2.7",
         "@vitejs/plugin-react": "^6.1.1",
+        "conventional-changelog-conventionalcommits": "8.0.0",
         "electrobun": "^2.0.1",
         "semantic-release": "^25.0.9",
         "tailwindcss": "^4.3.3",
@@ -418,6 +419,8 @@
     "content-type": ["content-type@3.0.0", "", {}, "sha512-AIi5H6p0xk5uknXcN3/rmhP8jgp69OfSe/JuKiQAFprJ7UGw7mwj7m4XcmDzlrnJDG+cGpphAINGdU3g3g7kDw=="],
 
     "conventional-changelog-angular": ["conventional-changelog-angular@8.3.1", "", { "dependencies": { "compare-func": "^2.0.0" } }, "sha512-6gfI3otXK5Ph5DfCOI1dblr+kN3FAm5a97hYoQkqNZxOaYa5WKfXH+AnpsmS+iUH2mgVC2Cg2Qw9m5OKcmNrIg=="],
+
+    "conventional-changelog-conventionalcommits": ["conventional-changelog-conventionalcommits@8.0.0", "", { "dependencies": { "compare-func": "^2.0.0" } }, "sha512-eOvlTO6OcySPyyyk8pKz2dP4jjElYunj9hn9/s0OB+gapTO8zwS9UQWrZ1pmF2hFs3vw1xhonOLGcGjy/zgsuA=="],
 
     "conventional-changelog-writer": ["conventional-changelog-writer@8.4.0", "", { "dependencies": { "@simple-libs/stream-utils": "^1.2.0", "conventional-commits-filter": "^5.0.0", "handlebars": "^4.7.7", "meow": "^13.0.0", "semver": "^7.5.2" }, "bin": { "conventional-changelog-writer": "dist/cli/index.js" } }, "sha512-HHBFkk1EECxxmCi4CTu091iuDpQv5/OavuCUAuZmrkWpmYfyD816nom1CvtfXJ/uYfAAjavgHvXHX291tSLK8g=="],
 
