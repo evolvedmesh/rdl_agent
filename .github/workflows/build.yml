@@ -1,15 +1,31 @@
 name: build
 
-# Produces a self-contained bundle per desktop platform, and attaches it to the release:
-#   rdl-agent            the compiled app (GUI / `serve` / `mcp-shim`, all in one file)
-#   bin/                 poppler-utils + ImageMagick FOR THAT PLATFORM, libraries vendored
+# Produces a self-contained Electrobun bundle per desktop platform and attaches it to the
+# release:
+#   app/                 the self-extracting Electrobun wrapper (bin/launcher + a
+#                         compressed Resources/<hash>.tar.zst — NOT a flat bin/bun tree;
+#                         run bin/launcher once to install it, same as any end user would)
+#   tools/                poppler-utils + ImageMagick FOR THAT PLATFORM, libraries vendored
 #   README.md            how to run it
 # packaged as rdl-agent-<platform>.tar.gz (Linux/macOS) or .zip (Windows).
 #
-# Each leg runs on its native runner: `bun install` there pulls that platform's
-# @gpuix/native-*, and the PDF tools are that OS's own build (apt / brew / choco). The
-# smoke test then runs the bundled tools against a fixture PDF, so a bundle whose
+# `tools/` sits beside the wrapper, not inside it, which means it is only found
+# automatically while running straight out of this extracted folder. Once `bin/launcher`
+# installs the app elsewhere (its normal, intended use), resolveTool()
+# (packages/feedback/src/bin.ts) can no longer find it there — see the README's
+# LAYOUT_TOOLS_DIR note. Bundling tools/ *inside* the Electrobun payload instead (so it
+# travels through self-extraction) is a real option but changes electrobun.config.ts and
+# packages/feedback/src/bin.ts's search order too, not just this workflow — left as a
+# known follow-up rather than done silently here.
+#
+# Hutch does not cross-compile, so each leg runs on its native runner and builds there.
+# The smoke test decompresses the wrapper's real payload (mirroring what bin/launcher
+# would extract) and runs the bundled tools against a fixture PDF, so a bundle whose
 # vendored libraries are incomplete never reaches a release.
+#
+# STATUS: the Electrobun legs of this workflow have NOT been run. The port was verified
+# locally with `hutch electrobun dev` on Linux only; `--env=stable`, macOS and Windows are
+# unproven here. Treat the first run as the test.
 #
 # Triggers:
 #   - `workflow_call` with `tag`  — how release.yml invokes it after a release is cut.
@@ -88,18 +104,12 @@ jobs:
         include:
           - id: linux-x64
             os: ubuntu-latest
-            script: build:linux-x64
-            binary: layout-agent-linux-x64
             archive: tar
           - id: macos-arm64
             os: macos-14
-            script: build:macos-arm64
-            binary: layout-agent-macos-arm64
             archive: tar
           - id: windows-x64
             os: windows-2022
-            script: build:windows-x64
-            binary: layout-agent-windows-x64.exe
             archive: zip
 
     runs-on: ${{ matrix.os }}
@@ -118,22 +128,81 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: Compile the app binary
-        run: bun run ${{ matrix.script }}
+      # Electrobun's Linux wrapper links GTK 3, WebKitGTK 4.1, Ayatana AppIndicator and
+      # librsvg. Without them the build succeeds and the launcher then refuses to start.
+      - name: Linux webview runtime
+        if: matrix.id == 'linux-x64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev cmake pkg-config
 
-      # --- vendor poppler + ImageMagick into the bundle's bin/ ----------------------
-      # resolveTool() (packages/feedback/src/bin.ts) looks for these next to the app
-      # binary in `bin/`, so an offline drop works. Libraries are vendored too; the one
-      # system dependency left on each platform is its C runtime.
+      - name: Install Hutch (Linux/macOS)
+        if: matrix.id != 'windows-x64'
+        shell: bash
+        run: |
+          curl -fsSL https://hutch.blackboard.sh/hutch/install.sh | sh
+          echo "$HOME/.hutch/bin" >> "$GITHUB_PATH"
+
+      # The Linux/macOS installer is a POSIX shell script; Hutch's own docs give a
+      # separate PowerShell command for Windows rather than saying the .sh works there,
+      # so this does not reuse it. The install path below mirrors the documented
+      # ~/.hutch/bin convention but is UNVERIFIED — the "Verify Hutch" step next fails
+      # fast and clearly if it's wrong, rather than "hutch: command not found" ten steps
+      # into the build.
+      - name: Install Hutch (Windows)
+        if: matrix.id == 'windows-x64'
+        shell: pwsh
+        run: |
+          & ([scriptblock]::Create((irm https://hutch.blackboard.sh/hutch/install.ps1)))
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.hutch\bin"
+
+      - name: Verify Hutch is on PATH
+        shell: bash
+        run: hutch --version
+
+      # Vite owns the view build (Hutch cannot serialise the Tailwind plugin), then
+      # `hutch electrobun build` packages the main process and copies the dist in.
+      - name: Build the app bundle
+        run: |
+          bun run ui
+          hutch electrobun build --env=stable
+
+      # --- vendor poppler + ImageMagick into the bundle's tools/ --------------------
+      # resolveTool() (packages/feedback/src/bin.ts) looks for these in a `tools/` beside
+      # the running binary, so an offline drop works. NOT `bin/` — that is Electrobun's
+      # own (launcher, bundled bun, bspatch, zig-zstd). Libraries are vendored too; the
+      # one system dependency left is each platform's C runtime, plus GTK/WebKit on Linux.
+
+      - name: Stage the app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="rdl-agent-${{ matrix.id }}"
+          mkdir -p "$out/tools"
+
+          # Located structurally, not by name: Hutch names the per-platform build
+          # folder with its OWN os token ("win", not "windows"), and the app bundle
+          # inside it drops the space from "Layout Agent" (verified: `LayoutAgent/`,
+          # not `Layout Agent/`) — a name glob for either one broke the first time this
+          # ran. Every stable build is exactly one directory under build/stable-*/,
+          # whatever that directory is called.
+          stable_dir="$(find build -mindepth 1 -maxdepth 1 -type d -name 'stable-*' | head -1)"
+          if [ -z "$stable_dir" ]; then
+            echo "no stable-* build output under build/"; find build -maxdepth 2; exit 1
+          fi
+          app="$(find "$stable_dir" -mindepth 1 -maxdepth 1 -type d | head -1)"
+          if [ -z "$app" ]; then
+            echo "no app bundle inside $stable_dir"; find "$stable_dir" -maxdepth 2; exit 1
+          fi
+          cp -R "$app" "$out/app"
 
       - name: Bundle tools (Linux)
         if: matrix.id == 'linux-x64'
         run: |
           set -euo pipefail
           out="rdl-agent-${{ matrix.id }}"
-          mkdir -p "$out/bin"
-          cp "dist/${{ matrix.binary }}" "$out/rdl-agent"
-          chmod +x "$out/rdl-agent"
 
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends poppler-utils patchelf
@@ -141,9 +210,9 @@ jobs:
           # poppler: copy the three tools and every shared lib they pull in, except the
           # ABI floor (libc + the dynamic loader), then point each at its own dir.
           for t in pdfinfo pdftotext pdftoppm; do
-            cp "$(command -v "$t")" "$out/bin/$t"
+            cp "$(command -v "$t")" "$out/tools/$t"
           done
-          ( cd "$out/bin"
+          ( cd "$out/tools"
             for t in pdfinfo pdftotext pdftoppm; do
               ldd "$t" | awk '/=> \//{print $3}' | while read -r lib; do
                 case "$(basename "$lib")" in
@@ -157,8 +226,8 @@ jobs:
           # ImageMagick: its official portable build is already a single self-contained
           # file, so no vendoring — just drop it in. (An AppImage; APPIMAGE_EXTRACT_AND_RUN
           # is set job-wide so it runs without FUSE.)
-          curl -fsSL "https://github.com/ImageMagick/ImageMagick/releases/download/${IMAGEMAGICK_VERSION}/ImageMagick-${IMAGEMAGICK_VERSION}-gcc-x86_64.AppImage" -o "$out/bin/magick"
-          chmod +x "$out/bin/magick"
+          curl -fsSL "https://github.com/ImageMagick/ImageMagick/releases/download/${IMAGEMAGICK_VERSION}/ImageMagick-${IMAGEMAGICK_VERSION}-gcc-x86_64.AppImage" -o "$out/tools/magick"
+          chmod +x "$out/tools/magick"
 
       - name: Bundle tools (macOS)
         if: matrix.id == 'macos-arm64'
@@ -168,9 +237,6 @@ jobs:
         run: |
           set -euo pipefail
           out="rdl-agent-${{ matrix.id }}"
-          mkdir -p "$out/bin"
-          cp "dist/${{ matrix.binary }}" "$out/rdl-agent"
-          chmod +x "$out/rdl-agent"
 
           brew install poppler dylibbundler libpng
 
@@ -208,9 +274,9 @@ jobs:
             make install )
 
           for t in pdfinfo pdftotext pdftoppm; do
-            cp "$(brew --prefix)/bin/$t" "$out/bin/$t"
+            cp "$(brew --prefix)/bin/$t" "$out/tools/$t"
           done
-          cp "$im/bin/magick" "$out/bin/magick"
+          cp "$im/bin/magick" "$out/tools/magick"
 
           # Rewrite each tool's dylib references to @executable_path/libs, copy them there.
           #
@@ -219,7 +285,7 @@ jobs:
           # own. On a miss it does not fail — it PROMPTS on stdin for the path, so in CI
           # the step hangs until the job is killed rather than reporting an error.
           # Pointing it at Homebrew's lib dir is what keeps this non-interactive.
-          ( cd "$out/bin"
+          ( cd "$out/tools"
             for t in pdfinfo pdftotext pdftoppm magick; do
               dylibbundler -of -cd -b -x "./$t" -d ./libs -p '@executable_path/libs' \
                 -s "$(brew --prefix)/lib"
@@ -231,8 +297,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $out = "rdl-agent-${{ matrix.id }}"
-          New-Item -ItemType Directory -Force -Path "$out/bin" | Out-Null
-          Copy-Item "dist/${{ matrix.binary }}" "$out/rdl-agent.exe"
+          New-Item -ItemType Directory -Force -Path "$out/tools" | Out-Null
 
           choco install --no-progress -y poppler
 
@@ -243,7 +308,7 @@ jobs:
             if (-not $hit) { throw "$exe not found under chocolatey\lib\$lib" }
             return $hit.DirectoryName
           }
-          Copy-Item (Join-Path (ToolDir 'poppler' 'pdftoppm.exe') '*') "$out/bin/" -Recurse -Force
+          Copy-Item (Join-Path (ToolDir 'poppler' 'pdftoppm.exe') '*') "$out/tools/" -Recurse -Force
 
           # ImageMagick comes from the same pinned release as the Linux leg, not from
           # Chocolatey: `imagemagick.portable` no longer exists on the community feed.
@@ -263,53 +328,91 @@ jobs:
           }
           & $sz x $sevenZ "-o$imDir" -y | Out-Null
           if ($LASTEXITCODE) { throw "ImageMagick extract failed ($LASTEXITCODE)" }
-          Copy-Item "$imDir\magick.exe" "$out/bin/"
-          Copy-Item "$imDir\*.xml" "$out/bin/"
-          Copy-Item "$imDir\*.icc" "$out/bin/"
+          Copy-Item "$imDir\magick.exe" "$out/tools/"
+          Copy-Item "$imDir\*.xml" "$out/tools/"
+          Copy-Item "$imDir\*.icc" "$out/tools/"
           foreach ($e in 'pdfinfo.exe','pdftotext.exe','pdftoppm.exe','magick.exe') {
-            if (-not (Test-Path "$out/bin/$e")) { throw "missing $e in bundle" }
+            if (-not (Test-Path "$out/tools/$e")) { throw "missing $e in bundle" }
           }
 
       - name: Bundle README
         shell: bash
         run: |
           out="rdl-agent-${{ matrix.id }}"
-          bin="rdl-agent"; [ "${{ matrix.id }}" = "windows-x64" ] && bin="rdl-agent.exe"
-          cat > "$out/README.md" <<EOF
-          # RDL Agent — ${{ matrix.id }}
+          cat > "$out/README.md" <<'EOF'
+          # RDL Agent
 
-          One binary, three entrypoints:
+          `app/` is the Electrobun bundle. Launch the desktop app with:
 
-              ./$bin                                  desktop app
-              ./$bin serve                            headless core (drive it from a browser)
-              ./$bin mcp-shim --stdio --session <id>  per-session MCP proxy (spawned by the agent)
+              ./app/bin/launcher
 
-          \`bin/\` holds poppler-utils + ImageMagick with their libraries vendored, so
-          nothing extra is needed for rendering and page feedback. On Linux \`bin/magick\`
-          is ImageMagick's portable AppImage — if your box has no FUSE, export
-          \`APPIMAGE_EXTRACT_AND_RUN=1\` before launching. Agent sessions still need an ACP
-          agent CLI (Claude Code, opencode, …) on your PATH; it reuses your existing login.
+          The same bundle is also the headless core and the per-session MCP proxy —
+          but the app itself invokes these automatically (an agent session spawns the
+          shim; there is no reason to run `serve` by hand unless you are driving the
+          app from a browser instead of the window). If you do need to, run the
+          launcher once first — `app/bin/` only holds the installer, not the runtime —
+          then use the path it prints for the installed copy:
+
+              ./app/bin/launcher                                       # installs, then opens the window
+              <installed-dir>/bin/bun <installed-dir>/Resources/app/bun/index.js serve
+              <installed-dir>/bin/bun <installed-dir>/Resources/app/bun/index.js mcp-shim --stdio --session <id>
+
+          `tools/` holds poppler-utils + ImageMagick with their libraries vendored. It
+          is only found automatically while running directly out of this extracted
+          folder — once the launcher installs the app elsewhere, point it at these
+          tools explicitly:
+
+              export LAYOUT_TOOLS_DIR="$(pwd)/tools"     # keep this folder; don't delete it after installing
+
+          or simply install poppler-utils + ImageMagick 7 (the `magick` command, not
+          ImageMagick 6) system-wide instead. On Linux `tools/magick` is ImageMagick's
+          portable AppImage — if your box has no FUSE, export
+          `APPIMAGE_EXTRACT_AND_RUN=1` before launching.
+
+          On Linux the app itself additionally needs gtk3, webkit2gtk-4.1,
+          libayatana-appindicator and librsvg from your distribution; the launcher names
+          the missing library if one is absent.
+
+          Agent sessions still need an ACP agent CLI (Claude Code, opencode, …) on your
+          PATH; it reuses your existing login.
           EOF
 
       # --- smoke test: the bundle boots, and its vendored poppler + ImageMagick run
-      #     standalone (relative-path invocation from inside bin/, so a broken rpath /
+      #     standalone (relative-path invocation from inside tools/, so a broken rpath /
       #     dylib / DLL fails HERE and the bundle never reaches a release) ------------
+      #
+      # A stable build is a self-extracting WRAPPER — `app/bin/` holds only `launcher`;
+      # the real runtime is compressed in `app/Resources/<hash>.tar.zst`. Decompressing
+      # it directly is what a real install would produce, without running the GUI
+      # installer (which writes into the runner's home directory and tries to open a
+      # window this runner does not have).
       - name: Smoke test (Linux/macOS)
         if: matrix.id != 'windows-x64'
         run: |
           set -euo pipefail
           out="rdl-agent-${{ matrix.id }}"
 
+          payload="$(find "$out/app/Resources" -maxdepth 1 -name '*.tar.zst' | head -1)"
+          [ -n "$payload" ] || { echo "no compressed payload in $out/app/Resources"; ls -la "$out/app/Resources"; exit 1; }
+          extracted="$(mktemp -d)"
+          tar --zstd -xf "$payload" -C "$extracted"
+          runtime="$(find "$extracted" -mindepth 1 -maxdepth 1 -type d | head -1)"
+          [ -n "$runtime" ] || { echo "payload extracted nothing"; find "$extracted"; exit 1; }
+
           # `serve` refuses to start without somewhere to keep the client secret, and a
           # CI runner has no keychain (no secret-tool on Linux; no Windows backend at
           # all — see defaultSecretStore in packages/core/src/credentials.ts). This is
           # that documented opt-in: the data dir is a throwaway temp dir and the smoke
           # test never stores a credential, so no secret is ever written.
-          LAYOUT_DATA_DIR="$(mktemp -d)" LAYOUT_ALLOW_PLAINTEXT_SECRET=1 "./$out/rdl-agent" serve > serve.log 2>&1 &
+          #
+          # Invoking the bundled runtime directly is also the real test of the shim
+          # path: it is exactly what Session.mcpServerConfig() spawns.
+          LAYOUT_DATA_DIR="$(mktemp -d)" LAYOUT_ALLOW_PLAINTEXT_SECRET=1 LAYOUT_NO_AUTH=1 \
+            "$runtime/bin/bun" "$runtime/Resources/app/bun/index.js" serve > serve.log 2>&1 &
           pid=$!
           port=""
           for _ in $(seq 1 30); do
-            port=$(grep -oE 'localhost:[0-9]+' serve.log | head -1 | cut -d: -f2 || true)
+            port=$(grep -oE '127\.0\.0\.1:[0-9]+' serve.log | head -1 | cut -d: -f2 || true)
             [ -n "$port" ] && break
             sleep 1
           done
@@ -318,7 +421,7 @@ jobs:
           kill "$pid" 2>/dev/null || true
           echo "app booted on :$port"
 
-          b="$out/bin"; pdf="test/fixtures/preview.pdf"; work="$(mktemp -d)"
+          b="$out/tools"; pdf="test/fixtures/preview.pdf"; work="$(mktemp -d)"
           "$b/pdfinfo" "$pdf" | grep -q '^Pages:'
           test -n "$("$b/pdftotext" -layout "$pdf" -)"
           "$b/pdftoppm" -png -r 72 -singlefile "$pdf" "$work/p"
@@ -333,16 +436,32 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $out = "rdl-agent-windows-x64"
 
+          # Same reasoning as the Linux/macOS leg: a stable build is a self-extracting
+          # wrapper, not a flat bin\bun.exe tree, so decompress its real payload rather
+          # than running the installer (which installs into the runner's profile and
+          # tries to open a window this runner does not have).
+          $payload = Get-ChildItem "$out\app\Resources" -Filter '*.tar.zst' | Select-Object -First 1
+          if (-not $payload) { throw "no compressed payload in $out\app\Resources" }
+          $extracted = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP ([guid]::NewGuid()))
+          tar --zstd -xf $payload.FullName -C $extracted.FullName
+          if ($LASTEXITCODE) { throw "extracting $($payload.Name) failed" }
+          $runtime = Get-ChildItem $extracted.FullName -Directory | Select-Object -First 1
+          if (-not $runtime) { throw "payload extracted nothing" }
+
           $env:LAYOUT_DATA_DIR = (New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP ([guid]::NewGuid()))).FullName
           # Windows has no keychain backend at all, so this is required, not just
           # convenient. See the Linux/macOS smoke test for why it is safe here.
           $env:LAYOUT_ALLOW_PLAINTEXT_SECRET = "1"
-          $p = Start-Process -FilePath "$out/rdl-agent.exe" -ArgumentList "serve" `
+          $env:LAYOUT_NO_AUTH = "1"
+          # The bundled runtime against the bundled main process — exactly what
+          # Session.mcpServerConfig() spawns, so this exercises the shim path too.
+          $p = Start-Process -FilePath (Join-Path $runtime.FullName 'bin\bun.exe') `
+                 -ArgumentList (Join-Path $runtime.FullName 'Resources\app\bun\index.js'), "serve" `
                  -RedirectStandardOutput serve.log -RedirectStandardError serve.err -PassThru
           $port = $null
           foreach ($_ in 1..30) {
             if (Test-Path serve.log) {
-              $m = Select-String -Path serve.log -Pattern 'localhost:(\d+)' | Select-Object -First 1
+              $m = Select-String -Path serve.log -Pattern '127\.0\.0\.1:(\d+)' | Select-Object -First 1
               if ($m) { $port = $m.Matches[0].Groups[1].Value; break }
             }
             Start-Sleep 1
@@ -352,7 +471,7 @@ jobs:
           Stop-Process -Id $p.Id -Force
           Write-Host "app booted on :$port"
 
-          $b = "$out\bin"; $pdf = "test\fixtures\preview.pdf"
+          $b = "$out\tools"; $pdf = "test\fixtures\preview.pdf"
           $work = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP ([guid]::NewGuid()))
           # `$info` is pdfinfo's ~20 output lines. Against an array, PowerShell's
           # -match/-notmatch FILTER rather than return a boolean: `$info -notmatch

@@ -51,6 +51,19 @@ export type AppOptions = {
 	 * tests must pass a MemorySecretStore rather than letting it find the real one.
 	 */
 	secretStore?: SecretStore;
+	/**
+	 * Directory of built UI assets to serve at `/`. The webview loads the UI from this
+	 * same origin as `/api` and `/ws`, which is what keeps it CORS-free and lets a plain
+	 * browser drive the identical app.
+	 */
+	uiDir?: string;
+	/**
+	 * Bearer token required on /api, /ws and /mcp. Defaults to a fresh random one per
+	 * launch; pass null to disable (only for tests and browser-driven development).
+	 * Loopback alone is not an authorisation boundary — every other process on the box
+	 * can reach 127.0.0.1, and this server spawns agents and reads credentials.
+	 */
+	authToken?: string | null;
 };
 
 const DEFAULT_DATA_DIR = join(homedir(), ".local", "share", "layout-agent");
@@ -61,6 +74,14 @@ export async function createApp(opts: AppOptions = {}) {
 	const dataDir =
 		opts.dataDir ?? process.env.LAYOUT_DATA_DIR ?? DEFAULT_DATA_DIR;
 	await mkdir(dataDir, { recursive: true });
+
+	const authToken =
+		opts.authToken === undefined
+			? process.env.LAYOUT_NO_AUTH === "1"
+				? null
+				: crypto.randomUUID().replaceAll("-", "")
+			: opts.authToken;
+	const uiDir = opts.uiDir ?? process.env.LAYOUT_UI_DIR;
 
 	const store = new Store(join(dataDir, "layout.db"));
 	const secrets =
@@ -111,6 +132,7 @@ export async function createApp(opts: AppOptions = {}) {
 		// No shim file to locate: the running process is its own MCP shim (see
 		// Session.mcpServerConfig — it re-execs `<this> mcp-shim …`).
 		port: () => server.port ?? 0,
+		token: () => authToken,
 	});
 
 	const sockets = new Set<Bun.ServerWebSocket<{ sessionId?: string }>>();
@@ -173,6 +195,18 @@ export async function createApp(opts: AppOptions = {}) {
 		async fetch(req, srv) {
 			const url = new URL(req.url);
 			const path = url.pathname;
+
+			// Static UI assets stay open — they hold nothing secret and the document has
+			// to load before it can present a token. Everything with authority does not.
+			const guarded =
+				path.startsWith("/api/") || path.startsWith("/mcp/") || path === "/ws";
+			if (authToken !== null && guarded) {
+				const presented =
+					req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ??
+					url.searchParams.get("t");
+				if (presented !== authToken)
+					return new Response("unauthorized", { status: 401 });
+			}
 
 			if (path === "/ws") {
 				return srv.upgrade(req, { data: {} })
@@ -587,6 +621,12 @@ export async function createApp(opts: AppOptions = {}) {
 					return mcpHttp(req, path.slice("/mcp/".length));
 				}
 
+				// --- the UI itself -------------------------------------------------
+				if (uiDir && req.method === "GET") {
+					const asset = await serveUi(uiDir, path);
+					if (asset) return asset;
+				}
+
 				return new Response("Not found", { status: 404 });
 			} catch (e) {
 				return fail(e, 500);
@@ -684,7 +724,29 @@ export async function createApp(opts: AppOptions = {}) {
 		testConnection,
 		shutdown,
 		replaying: fake !== undefined,
+		authToken,
+		/** What to point a webview or a browser at: origin plus the launch token. */
+		url: `http://127.0.0.1:${server.port}/${authToken ? `?t=${authToken}` : ""}`,
 	};
+}
+
+/**
+ * Resolve one request against the built UI directory, refusing to escape it. Unknown
+ * paths fall back to index.html so client-side routes survive a reload.
+ */
+async function serveUi(uiDir: string, path: string): Promise<Response | null> {
+	const rel = path === "/" ? "/index.html" : path;
+	const resolved = join(uiDir, rel);
+	if (!resolved.startsWith(uiDir)) return null;
+
+	const file = Bun.file(resolved);
+	if (await file.exists()) return new Response(file);
+
+	// Only the document falls back; a missing asset should stay a 404 rather than
+	// silently return HTML and fail later as a confusing MIME error.
+	if (rel.includes(".")) return null;
+	const index = Bun.file(join(uiDir, "index.html"));
+	return (await index.exists()) ? new Response(index) : null;
 }
 
 function summariseHealth(

@@ -11,5 +11,5 @@ export { mcpHttpHandler } from "./http.ts";
 export type { Tool, ToolContent, ToolResult } from "./server.ts";
 export { failure, log, McpServer, text } from "./server.ts";
 export { runStdioShim } from "./shim.ts";
-export type { LoopLimits, ToolContext } from "./tools.ts";
+export type { LoopLimits, LoopStats, ToolContext } from "./tools.ts";
 export { createLayoutTools } from "./tools.ts";

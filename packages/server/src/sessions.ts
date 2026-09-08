@@ -23,7 +23,7 @@ import type {
 	WatchManager,
 } from "@layout/core";
 import { unifiedDiff } from "@layout/feedback";
-import { createLayoutTools, McpServer } from "@layout/mcp";
+import { createLayoutTools, type LoopStats, McpServer } from "@layout/mcp";
 
 export type SessionStatus =
 	| "starting"
@@ -118,11 +118,90 @@ export type SessionView = {
 	 * when `resume()` gets the agent running again.
 	 */
 	restored: boolean;
+	/**
+	 * What the agent has spent against its caps. Surfaced because "iteration 9 of 10"
+	 * arriving as a surprise inside a tool result is exactly the thing a human watching
+	 * the session should have been able to see coming.
+	 */
+	loop: LoopStats;
 };
+
+/**
+ * How long an unanswered permission request holds the agent before it is declined.
+ * Long enough to be away from the desk, short enough that a forgotten window does not
+ * pin a subprocess indefinitely.
+ */
+const PERMISSION_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * The one-off briefing prepended to a session's first prompt.
+ *
+ * Tool descriptions alone are weak steering: the agent meets them one at a time, in
+ * whatever order it happens to consider them, with nothing saying what kind of job this
+ * is or what a render actually costs. This says it once, up front, in the order that
+ * matters — and it is the thing S2 is measuring, so keep it honest and short rather
+ * than letting it grow into a prompt-engineering artefact.
+ */
+function briefing(layout: LayoutDetail): string {
+	return [
+		"You are editing one Business Central report layout, in place, on disk:",
+		`  ${layout.filePath}`,
+		`  report ${layout.reportNumber} "${layout.reportName}" for ${layout.clientName}`,
+		"",
+		"Work from what the page actually renders, not from what the XML looks like it",
+		"should do. The tools give you that, cheapest first:",
+		"",
+		"  layout_params   free     what this renders against; orient yourself first",
+		"  layout_lint     free     deterministic faults, no network — run after every edit",
+		"  layout_locate   free     rendered text or a coordinate -> the element that drew it",
+		"  layout_text     ~500t    the rendered page as laid-out text",
+		"  layout_diff     ~100t    what moved between the last two renders",
+		"  layout_render   SLOW     a live round trip to a real tenant, ~2s, rate-limited",
+		"  layout_page_image ~700t  pixels; only for genuinely visual questions",
+		"",
+		"Rules that matter:",
+		"- `layout_render` is the expensive one. Make ALL your edits, then render once.",
+		"  It returns lint, layout text and a geometry diff together, so you rarely need",
+		"  to call the cheaper tools separately straight afterwards.",
+		"- State what you expect each render to change. If the geometry diff disagrees",
+		"  with your expectation, your edit did something other than what you intended —",
+		"  stop and investigate rather than editing again.",
+		"- Do not search the XML for the element behind a value. `layout_locate` does that",
+		"  join for you; the file has hundreds of textboxes named nothing like their output.",
+		"- If a render reports that nothing moved, the thing you edited is not what draws",
+		"  the output you are trying to change. Locate it before touching the file again.",
+		"- The page has a fixed width. Widening one column usually means narrowing another;",
+		"  lint will tell you when the body no longer fits, which is what makes every",
+		"  second page blank.",
+		"",
+		"When you are done, say what you changed and what you could not fix. Do not claim",
+		"a fix you have not seen in a render.",
+	].join("\n");
+}
+
+/** Our own tools. All read-only or budget-capped, so none needs a human in the loop. */
+const OUR_TOOLS = [
+	"layout_render",
+	"layout_lint",
+	"layout_text",
+	"layout_diff",
+	"layout_locate",
+	"layout_page_image",
+	"layout_params",
+];
 
 /**
  * Auto-allow reads and our own layout_* tools; always ask before a write.
  * The agent's edits to a customer's layout are the one thing a human must see coming.
+ *
+ * Recognising our own tools takes more than a title match. Three real shapes, all
+ * observed live:
+ *   Claude Code   title "mcp__layout__layout_lint", rawInput {}
+ *   Copilot CLI   title "Lint report layout",       rawInput.command "layout_lint …"
+ *   plain         title "layout_lint"
+ * The first is why a leading \b does not work (the preceding "_" is a word character),
+ * and the second is why the title alone is not enough. Only named fields are searched,
+ * never the whole rawInput blob — an edit's payload can contain arbitrary file text.
  */
 function autoDecision(req: PermissionRequest): string | null {
 	const title = (req.toolCall.title ?? "").toLowerCase();
@@ -130,7 +209,18 @@ function autoDecision(req: PermissionRequest): string | null {
 	const isRead =
 		kind === "read" ||
 		/\bread\b|\bsearch\b|\bgrep\b|\bglob\b|\blist\b/.test(title);
-	const isOurTool = title.includes("layout_");
+
+	const raw = (req.toolCall.rawInput ?? {}) as Record<string, unknown>;
+	const named = ["command", "name", "tool", "toolName"]
+		.map((k) => (typeof raw[k] === "string" ? (raw[k] as string) : ""))
+		.join(" ")
+		.toLowerCase();
+
+	// No leading boundary; a trailing one stops `layout_lint_other` matching.
+	const isOurTool = OUR_TOOLS.some((t) =>
+		new RegExp(`${t}(?![a-z0-9_])`).test(`${title} ${named}`),
+	);
+
 	if (!isRead && !isOurTool) return null;
 	const allow =
 		req.options.find((o) => o.kind === "allow_always") ??
@@ -162,8 +252,15 @@ export class Session {
 	#acpSessionId?: string;
 	#mcp: McpServer;
 	#listeners = new Set<(e: SessionEvent) => void>();
-	#pendingPermission?: { resolve: (id: string | null) => void };
+	#pendingPermission?: {
+		resolve: (id: string | null) => void;
+		timer?: ReturnType<typeof setTimeout>;
+	};
+	/** The briefing goes out once, on the first prompt of a live agent. */
+	#briefed = false;
 	#chunkBuffer = "";
+	/** Reasoning arrives token by token too, and needs the same coalescing. */
+	#thoughtBuffer = "";
 	/** Monotonic per session; assigned to each timeline item so an update rewrites its row. */
 	#nextSeq = 0;
 	#seqById = new Map<string, number>();
@@ -203,6 +300,12 @@ export class Session {
 			latestPdfPath: restore?.latestPdfPath ?? null,
 			error: restore?.error ?? null,
 			restored: restore !== undefined,
+			loop: {
+				iterations: 0,
+				imagesThisIteration: 0,
+				noOpRenders: 0,
+				failedRenders: 0,
+			},
 		};
 		if (restore) {
 			this.#acpSessionId = restore.acpSessionId ?? undefined;
@@ -213,6 +316,9 @@ export class Session {
 		}
 
 		const watcher = deps.watcher;
+		// Set by createLayoutTools via onStats; read back after each call so the view
+		// always carries what the agent has actually spent.
+		let readLoopStats: (() => LoopStats) | undefined;
 		this.#mcp = new McpServer({ name: "layout", version: "0.1.0" }).tools(
 			createLayoutTools({
 				store: deps.store,
@@ -225,7 +331,11 @@ export class Session {
 				// the same bytes do not both make a live BC round trip. WatchManager.suppress()
 				// refcounts, so overlapping renders each hold their own.
 				suppressWatch: watcher ? (lid) => watcher.suppress(lid) : undefined,
+				onStats: (read) => {
+					readLoopStats = read;
+				},
 				onCall: ({ tool, isError }) => {
+					if (readLoopStats) this.view.loop = readLoopStats();
 					this.#pushTimeline({
 						kind: "tool",
 						id: `${tool}-${Date.now()}`,
@@ -388,10 +498,12 @@ export class Session {
 	 * `command` is whatever is running us (`process.execPath`), and the args re-enter the
 	 * same entrypoint in shim mode:
 	 *   - compiled single binary: `<app> mcp-shim --stdio --session <id>`
+	 *   - Electrobun bundle:      `<bundle>/bin/bun <bundle>/Resources/app/bun/index.js …`
 	 *   - dev (`bun <main> …`):   `bun <main> mcp-shim --stdio --session <id>`
-	 * `Bun.main` inside a `--compile` build lives under `/$bunfs/`, which is the tell.
+	 * `Bun.main` inside a `--compile` build lives under `/$bunfs/`, which is the tell; an
+	 * Electrobun bundle has a real path, so it re-enters the same way dev does.
 	 */
-	mcpServerConfig(port: number) {
+	mcpServerConfig(port: number, token?: string | null) {
 		const compiled =
 			Bun.main.startsWith("/$bunfs/") || Bun.main.includes("~BUN");
 		const reenter = compiled ? [] : [Bun.main];
@@ -399,7 +511,10 @@ export class Session {
 			name: "layout",
 			command: process.execPath,
 			args: [...reenter, "mcp-shim", "--stdio", "--session", this.id],
-			env: [{ name: "LAYOUT_APP_PORT", value: String(port) }],
+			env: [
+				{ name: "LAYOUT_APP_PORT", value: String(port) },
+				...(token ? [{ name: "LAYOUT_APP_TOKEN", value: token }] : []),
+			],
 		};
 	}
 
@@ -506,9 +621,16 @@ export class Session {
 		});
 		this.#setStatus("thinking");
 		try {
-			await this.#client.prompt(this.#acpSessionId, [
-				{ type: "text", text: message },
-			]);
+			// The briefing rides on the first prompt rather than costing a turn of its
+			// own. Until now the ONLY steering was the tool descriptions, which the agent
+			// sees one at a time and out of order — nothing told it the shape of the job,
+			// that a render is a live round trip, or what its budget was.
+			const text = this.#briefed
+				? message
+				: `${briefing(this.layout)}\n\n---\n\n${message}`;
+			this.#briefed = true;
+
+			await this.#client.prompt(this.#acpSessionId, [{ type: "text", text }]);
 			this.#flushChunks();
 			this.#setStatus("idle");
 		} catch (e) {
@@ -571,8 +693,10 @@ export class Session {
 	}
 
 	resolvePermission(optionId: string | null): void {
-		this.#pendingPermission?.resolve(optionId);
+		const pending = this.#pendingPermission;
 		this.#pendingPermission = undefined;
+		if (pending?.timer) clearTimeout(pending.timer);
+		pending?.resolve(optionId);
 		this.view.permission = null;
 		this.#emit({ type: "permission", request: null });
 		this.#setStatus("thinking");
@@ -598,7 +722,22 @@ export class Session {
 		this.#emit({ type: "permission", request: pending });
 
 		return new Promise<string | null>((resolve) => {
-			this.#pendingPermission = { resolve };
+			// Bounded, because an unanswered request otherwise pins the agent process and
+			// the session's status forever — a window closed on a Friday would still be
+			// holding a subprocess open. Declining is the safe default: it never grants a
+			// write nobody approved.
+			const timer = setTimeout(() => {
+				if (this.#pendingPermission?.resolve !== resolve) return;
+				this.#pendingPermission = undefined;
+				this.view.permission = null;
+				this.#emit({ type: "permission", request: null });
+				this.#emit({
+					type: "error",
+					message: `No answer to "${pending.title}" within ${Math.round(PERMISSION_TIMEOUT_MS / 60000)} minutes — declined automatically.`,
+				});
+				resolve(null);
+			}, PERMISSION_TIMEOUT_MS);
+			this.#pendingPermission = { resolve, timer };
 		});
 	}
 
@@ -610,6 +749,7 @@ export class Session {
 	 * matching what actually happened rather than what arrived first on the wire.
 	 */
 	#flushChunks(): void {
+		this.#flushThought();
 		if (!this.#chunkBuffer) return;
 		this.#pushTimeline({
 			kind: "message",
@@ -620,6 +760,22 @@ export class Session {
 		this.#chunkBuffer = "";
 	}
 
+	/**
+	 * Close off a run of reasoning. Without this each streamed token became its own
+	 * timeline entry — a real agent produced sixty of them for one paragraph, one word
+	 * per row.
+	 */
+	#flushThought(): void {
+		if (!this.#thoughtBuffer) return;
+		this.#pushTimeline({
+			kind: "message",
+			id: crypto.randomUUID(),
+			role: "thought",
+			text: this.#thoughtBuffer.trim(),
+		});
+		this.#thoughtBuffer = "";
+	}
+
 	#onUpdate(u: SessionUpdate): void {
 		// While `resume()` runs `session/load`, the agent replays the whole conversation as
 		// `session/update` notifications. We already have that transcript persisted and it is
@@ -628,21 +784,18 @@ export class Session {
 		if (this.#loading) return;
 		switch (u.sessionUpdate) {
 			case "agent_message_chunk": {
+				// Reasoning that precedes an answer is finished the moment the answer starts.
+				this.#flushThought();
 				if (u.content.type === "text") this.#chunkBuffer += u.content.text;
 				break;
 			}
 			case "agent_thought_chunk": {
-				if (u.content.type === "text") {
-					this.#pushTimeline({
-						kind: "message",
-						id: crypto.randomUUID(),
-						role: "thought",
-						text: u.content.text,
-					});
-				}
+				if (u.content.type === "text") this.#thoughtBuffer += u.content.text;
 				break;
 			}
 			case "tool_call": {
+				// A tool call ends whatever reasoning led to it, so it lands above the call.
+				this.#flushThought();
 				const { diffPatch, preview } = summarizeToolContent(u.content);
 				const call: ToolCallView = {
 					id: u.toolCallId,
@@ -742,6 +895,8 @@ export class SessionManager {
 			watcher?: WatchManager;
 			workDir: string;
 			port: () => number;
+			/** The loopback token the shim must present back to /mcp. */
+			token?: () => string | null;
 		},
 	) {}
 
@@ -817,7 +972,9 @@ export class SessionManager {
 			);
 		}
 		session.setSpawn(provider.command, provider.args);
-		await session.resume([session.mcpServerConfig(this.deps.port())]);
+		await session.resume([
+			session.mcpServerConfig(this.deps.port(), this.deps.token?.()),
+		]);
 		return session;
 	}
 
@@ -863,7 +1020,9 @@ export class SessionManager {
 		});
 		this.#sessions.set(id, session);
 
-		await session.start([session.mcpServerConfig(this.deps.port())]);
+		await session.start([
+			session.mcpServerConfig(this.deps.port(), this.deps.token?.()),
+		]);
 		return session;
 	}
 

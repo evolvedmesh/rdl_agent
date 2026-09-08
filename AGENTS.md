@@ -16,9 +16,9 @@ change the XML, render again.
 
 Two halves, in two repos:
 
-| | |
-|---|---|
-| **This repo** | the app — core engine, feedback pipeline, MCP tools, ACP client, server, GPUIX desktop UI |
+|                                     |                                                                                                                  |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **This repo**                       | the app — core engine, feedback pipeline, MCP tools, ACP client, server, Electrobun desktop UI                   |
 | `~/projects/al_dev/BaseApplication` | the AL that renders a *supplied* layout: codeunit 60796 `PIN Layout Preview API`, web service `PINLayoutPreview` |
 
 Nothing works without both. The AL is currently **built and analyzer-clean but
@@ -48,32 +48,61 @@ works. Treat returned source as already read — don't re-open those files.
 ## Commands
 
 ```bash
-bun run test        # 106 tests, offline, ~5s
+bun run test        # 117 tests, offline, ~6s
 bun run typecheck   # tsc --noEmit across the workspace
-bun run desktop     # the GPUIX app
-bun run server      # core only, no UI — a browser can drive it
-bun run build       # one self-contained binary for this host → dist/
-bun run build:all   # linux-x64 + macos-arm64 + windows-x64 (GPUIX's three targets)
+bun run ui          # build the webview with Vite → apps/desktop/dist
+bun run desktop     # the Electrobun app (builds the UI first)
+bun run server      # core + UI over HTTP, no window — a browser can drive it
+bun run build       # stable bundle + installer for this host → artifacts/
+bun run build:dev   # runnable bundle, no distribution artifacts → build/
+bun run build:canary # optimized prerelease channel, same shape as build
 ```
 
-The build is a single file that is every entrypoint — GUI by default, `<bin> serve`
-headless, `<bin> mcp-shim …` the per-session proxy (the agent re-execs the binary, so
-sessions work packaged). `main.tsx` routes argv before it boots GPUI. It still needs
-poppler + ImageMagick on the system (`resolveTool` in `packages/feedback/src/bin.ts` looks
-on PATH, in a `bin/` beside the binary, then `$LAYOUT_TOOLS_DIR`). `build:all` only makes a
-*loadable* binary for a target on a host with that platform's `@gpuix/native-*` — it is a
-CI-matrix helper, not a one-box cross-compile.
+The app is one Electrobun bundle. Inside it, `<app>/bin/bun` is a real Bun runtime and
+`<app>/Resources/app/bun/index.js` is the main process — which is why the two non-GUI
+entrypoints still work with no extra files:
+
+```bash
+<bundled-bun> <index.js> serve                            # headless core
+<bundled-bun> <index.js> mcp-shim --stdio --session <id>  # the per-session MCP proxy
+```
+
+`Session.mcpServerConfig()` builds exactly that from `process.execPath` + `Bun.main`.
+Neither path loads the native window wrapper, so both run headless with no display.
+
+The UI is built by **Vite, not by Hutch** — Hutch cannot serialise bundler plugins across
+its config boundary and Tailwind needs one. `electrobun.config.ts` copies
+`apps/desktop/dist` into `views/mainview`, and the app's own loopback server serves it, so
+the UI and `/api` share an origin.
+
+It still needs poppler + ImageMagick on the system. `resolveTool` in
+`packages/feedback/src/bin.ts` looks on PATH, in a **`tools/`** folder beside the binary,
+then `$LAYOUT_TOOLS_DIR`. Not `bin/` — inside a bundle that is Electrobun's own.
+
+Hutch does not cross-compile: a full matrix means a native runner per target. On Linux the
+bundle links **gtk3, webkit2gtk-4.1, libayatana-appindicator and librsvg** at runtime; the
+launcher names the missing library if one is absent.
 
 Run both `test` and `typecheck` before claiming anything works. The test suite needs no
 tenant and no secret.
 
 ### Seeing the UI
 
-There is **no working screenshot API on Linux** (see below), so capture the compositor:
+The UI is a webview served over HTTP, so the fastest loop is a **real browser**:
 
 ```bash
-LAYOUT_DATA_DIR=/tmp/scratch RDLA_FAKE_BC=/path/to/any.pdf bun run desktop &
-sleep 12
+LAYOUT_DATA_DIR=/tmp/scratch RDLA_FAKE_BC=$PWD/test/fixtures/preview.pdf \
+  LAYOUT_PORT=7788 LAYOUT_NO_AUTH=1 bun apps/desktop/src/main.ts serve
+# open http://127.0.0.1:7788/ and use devtools like any web app
+```
+
+That is also what makes the UI testable at all — Playwright drives the identical app.
+
+For the real window, capture the compositor:
+
+```bash
+bun run desktop &
+sleep 25
 hyprctl clients -j | python3 -c "
 import json,sys
 for c in json.load(sys.stdin):
@@ -81,8 +110,16 @@ for c in json.load(sys.stdin):
 grim -g "<x>,<y> <w>x<h>" shot.png
 ```
 
+**`WEBKIT_DISABLE_COMPOSITING_MODE=1` is not optional on this machine.** WebKitGTK's
+accelerated compositing fails under XWayland here — `X11 Error: GLXBadWindow` — and the
+webview then paints **nothing at all**, with no error in the app's own log. `bun run
+desktop` sets it; a bare `hutch electrobun dev` does not. A blank window is almost
+certainly this, not your code. It also means CSS animation is unaccelerated here, so do
+not judge animation smoothness on this box.
+
 **Look at the screenshot.** Several real bugs in this UI — wrapped labels, a clipped page,
-stretched badges — were invisible in code and obvious in a picture.
+a client name truncated to a single character — were invisible in code and obvious in a
+picture.
 
 ---
 
@@ -135,37 +172,46 @@ apps/cli      →  packages/core
 Each package must stay usable without the ones to its left. `apps/cli` renders a layout
 with **only** `@layout/core` — that is the check the boundary actually holds, and it is
 what keeps the desktop shell replaceable. Don't import `@layout/server` from `core`, or
-GPUIX from anything but `apps/desktop`.
+Electrobun from anything but `apps/desktop/src/main.ts`.
+
+There is a second boundary inside `apps/desktop`, and it is easy to break silently:
+
+```
+apps/desktop/src/main.ts    the Bun main process — may import anything
+apps/desktop/src/view/**    the webview — **types only** from @layout/*
+```
+
+The view runs in WebKit. Importing a *value* from `@layout/core` — even a three-line
+formatter — makes the bundler follow that package's real module graph and pull
+`bun:sqlite`, `node:fs` and `Bun.spawn` into a browser bundle. `vite.config.ts`
+deliberately declares **no alias** for `@layout/*`, so a value import fails the build
+loudly instead of quietly succeeding. Small shared helpers belong in
+`apps/desktop/src/view/format.ts`.
 
 ---
 
-## GPUIX rules
+## Webview rules
 
-The desktop UI is React → GPUI → Vulkan. It is *not* the DOM, and these are not style
-preferences — each one is a bug that already happened:
+The UI is React 19 + Tailwind v4 in a system webview, served over HTTP by the app's own
+loopback server. The old GPUIX rules are gone — the browser inherits colour, wraps text,
+clips with ellipsis and has real portals. What replaced them:
 
-| Rule | What goes wrong |
-|---|---|
-| Every `<text>` needs an explicit `color` | GPUI does not inherit; uncoloured text paints black and vanishes |
-| A `<text>` takes **exactly one** string child | `{n} items` renders as two stacked lines — use one template literal |
-| `<img src>` is a **filesystem path**, not a URL | HTTP URLs fail as a file-not-found; ask the server for `/api/page-path/...` |
-| Set both `width` and `height` on an image | the box is empty until decode, then jumps |
-| `div` defaults to block | any row or column needs `display: "flex"` |
-| No shorthand `padding` / `margin` / `border` | use the long forms; `borderWidth` + `borderColor` |
-| Never nest scrollers | the inner one swallows the wheel; panes are siblings |
-| Don't centre a child wider than its scroller | the leading edge clips and cannot be scrolled to |
-| Badges need `alignSelf: "flex-start"` | a flex child stretches to fill the cross axis |
+| Rule                                                                     | What goes wrong                                                                                  |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| Theme tokens are **named utilities** (`bg-panel`, `text-dim`)            | `bg-[--color-panel]` does not resolve in Tailwind v4 and silently does nothing                   |
+| Panes use **container queries** (`@container` + `@2xl:`), not `compact:` | a pane in a split is unrelated to the viewport; media queries fold the wrong columns             |
+| Never put a `flex-1` spacer beside a `flex-1` column                     | they split the free space and starve the column — this truncated a client name to `A…`           |
+| Agent markdown goes through `Markdown.tsx`                               | it is model output rendered in a document holding an API token; `marked` alone is not a boundary |
+| `<img src>` is an **HTTP URL** with the token (`api.pageUrl`)            | the server guards `/api/*`, and an `<img>` cannot set a header                                   |
+| Animations must survive `prefers-reduced-motion`                         | the global override in `index.css` needs `!important` to beat Motion's inline styles             |
 
-`apps/desktop/src/components/ui.tsx` encodes most of these. Prefer `Row`/`Col`/`Text`/
-`Button`/`Badge` over raw elements.
+`apps/desktop/src/view/components/ui.tsx` holds the primitives; prefer them over raw
+elements. Radix supplies `Dialog`, `Select`, `DropdownMenu` and `Tooltip` — real portals
+and focus traps, so modals are no longer hand-rolled overlays.
 
-GPUIX ships `Select`, `Combobox`, `Tooltip`, `markdown`, `code`, `diff` and `virtual-list`
-— use them rather than hand-rolling. It is single-window with no portal, so modals are an
-absolutely-positioned overlay at the app root.
-
-**No automated UI testing on Linux.** The automation transport connects, but
-`captureScreenshot`, `getAllText` and `getPaintedText` are undefined. `enableAutomation()`
-also suppresses the visible window.
+**The UI is testable now.** `bun run server` + Playwright drives the same app the window
+does. The old "no automated UI testing on Linux" limitation was a GPUIX constraint and no
+longer applies.
 
 ---
 
@@ -197,13 +243,13 @@ ImageMagick on `PATH` but no tenant. CI runs `bun run check` + `typecheck` on ev
 branch (`.github/workflows/check.yml`); `.github/workflows/build.yml` builds the
 per-platform bundles on a `v*` tag or manual dispatch.
 
-| | |
-|---|---|
-| `core.test.ts` | store, migrations, dedupe, queue, chat persistence, URL escaping, the legacy switch |
-| `feedback.test.ts` | XML, lint, **measured token costs**, diff, locate, external-tool resolution |
-| `mcp.test.ts` | tool surface, loop controls, the ladder, wire protocol |
-| `acp.test.ts` | capabilities, sessions, permissions, agent→client calls |
-| `server.test.ts` | HTTP API, WebSocket, watcher arbitration, chat restore + resume, onboarding, the MCP shim |
+|                    |                                                                                                                                                                                                             |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core.test.ts`     | store, migrations, dedupe, queue, chat persistence, URL escaping, the legacy switch                                                                                                                         |
+| `feedback.test.ts` | XML, lint, **measured token costs**, diff, locate, external-tool resolution                                                                                                                                 |
+| `mcp.test.ts`      | tool surface, loop controls, the ladder, wire protocol, convergence signals (no-op renders, per-result budget)                                                                                              |
+| `acp.test.ts`      | capabilities, sessions, permissions, agent→client calls                                                                                                                                                     |
+| `server.test.ts`   | HTTP API, WebSocket, watcher arbitration, chat restore + resume, onboarding, the MCP shim, the loopback auth token, the three real permission-title shapes, thought-chunk coalescing, the one-time briefing |
 
 Two habits that have paid off here:
 
@@ -227,24 +273,67 @@ render engine with dedupe and a per-connection queue, the file watcher — which
 hot reload: it re-renders on *any* debounced change (3s), the agent's own edits included,
 not just a human's save; the whole feedback ladder including `locate`, seven MCP tools
 over stdio and HTTP, the ACP client, agent chats persisted to SQLite and rebuilt across a
-restart, the REST/WS server, and a GPUIX UI with reports, detail, settings, onboarding
-dialogs and the session view.
+restart, the REST/WS server, and an Electrobun/React UI with reports, detail, settings,
+onboarding dialogs and the session view — driven end to end in a browser against the
+replay fixture.
 
 **Not proven:**
 
 - **The loop has never been measured.** Everything past Phase 2 assumes an agent can
   actually converge on a layout fix. `spikes/tasks/S2-tasks.md` is the test. This is the
-  plan's own go/no-go gate and it is still open.
-- **No live ACP session.** The client — and session resume via ACP `session/load` — is
-  tested against a mock only.
+  plan's own go/no-go gate and it is still open — and it **cannot** be run in replay mode,
+  because the fixture PDF never changes, so an edit can never show up in the render. S2
+  needs a real tenant, which means asking first.
+- **Multi-turn conversations, resume via `session/load`, and the permission timeout are
+  still only covered by the mock.** Several separate turns have been driven live (see
+  below), but never one continuous back-and-forth in a single session, and never a
+  restart mid-conversation.
+- **The Electrobun packaging fixes below are themselves unverified on real CI.** They were
+  found and corrected against local builds, but `build.yml` has not executed on GitHub's
+  runners at all — treat the first real run as the test, not this description of it.
+- **Windows and macOS are unbuilt.** Only `linux-x64` has been through
+  `hutch electrobun build --env=stable`.
 - **The AL is undeployed.** Uncommitted in the BaseApplication repo.
 
-**Packaging:** `bun run build` compiles one self-contained binary for the host — GUI,
-headless `serve`, and the `mcp-shim` sub-entrypoint all in the one file. Verified end to
-end: the GPUI window opens with no `node_modules`, and a live agent session drives
-`layout_render` / `layout_text` through the binary re-execing itself as the shim. poppler
-+ ImageMagick are still resolved from the system. Cross-target scripts compile but only
-load GPUIX on a matching host. No installer, icon, signing, updater.
+**Proven with a live agent** (Claude Code 2.1.233 via `@agentclientprotocol/claude-agent-acp`,
+replay mode, several separate sessions): ACP `session/new` → `mcpServers` → the shim
+re-execing `process.execPath` + `Bun.main` → HTTP `/mcp/<session>` → the running render
+engine, repeatably. The agent received real tool output, the budget footer
+(`Session.prompt()` now prepends a one-time briefing — ladder, budget, the "state an
+expectation" rule — to the first turn only), and found the wrapped `SRICHARAN` /
+`Credit Memo` cells from `layout_text` alone without reaching for a page image, unprompted.
+Loop counters (renders spent, no-op renders, failures) flow from `createLayoutTools`'s
+`onStats` into `SessionView.loop` and show in the session header.
+
+Three real bugs surfaced only by this live run, all now covered by regression tests:
+`autoDecision()`'s auto-allow policy failed on two of three real permission-title shapes
+(`mcp__layout__layout_lint` from Claude — a leading `\b` fails because the preceding `_`
+is a word character — and Copilot's human-readable title with the real name in
+`rawInput.command`); `agent_thought_chunk` was not coalesced, so one paragraph of
+reasoning became ~60 timeline rows of one word each; and the app-bundle staging step in
+`build.yml` globbed for a directory name (`*Layout Agent*`, with a space) that Hutch does
+not actually produce (`LayoutAgent`, no space) — caught before any CI run, not by one.
+
+**GitHub Copilot CLI does not work as a provider.** Observed on 1.0.83: it accepts
+`mcpServers` on `session/new` and never starts them — no shim process is spawned — then
+runs `layout_params` as a *shell command* and reports "command not found". It connects
+and streams normally, so this is not detectable at handshake time; `providers.ts` carries
+a `note` and the picker shows it.
+
+**Packaging:** one Electrobun bundle carries a Bun runtime, the main process, and the
+Vite-built UI (327 KB boot chunk after lazy-loading Session/Settings/dialogs, down from
+560 KB before splitting). `--env=stable` produces a 41 MB app plus a 35 MB zstd
+self-extractor, a 36 MB installer and update metadata — smaller than the ~100 MB single
+binary it replaces. **The stable build is a self-extracting wrapper, not a flat
+directory**: `app/bin/` holds only `launcher`; the real runtime is compressed inside
+`app/Resources/<hash>.tar.zst` and only appears once `bin/launcher` installs it to
+`~/.local/share/<identifier>/stable/app`. Both non-GUI entrypoints were run from that
+installed location with no repo and no `node_modules`. poppler + ImageMagick are still
+resolved from the system (or a sibling `tools/` folder — not `bin/`, which is
+Electrobun's own). **Known gap:** vendored tools shipped beside the release download's
+wrapper are not reachable once a real user installs it elsewhere; `$LAYOUT_TOOLS_DIR` is
+the workaround, bundling them *inside* the Electrobun payload is the real fix and remains
+undone. Hutch does not cross-compile. No icon, signing or updater configured.
 
 **Deliberately not built:** cloud sync, multi-user server, AL/dataset editing, a visual
 drag-and-drop designer, API-key management, our own PDF renderer or docx editor.

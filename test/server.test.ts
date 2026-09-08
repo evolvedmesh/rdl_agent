@@ -16,6 +16,61 @@ const FIXTURE_PDF = join(import.meta.dir, "fixtures", "preview.pdf");
 const FIXTURE_RDL = join(import.meta.dir, "fixtures", "Default.rdl");
 const tmp = () => mkdtempSync(join(tmpdir(), "layout-srv-"));
 
+describe("loopback authorisation", () => {
+	let app: App;
+	let base: string;
+
+	beforeAll(async () => {
+		app = await createApp({
+			dataDir: tmp(),
+			port: 0,
+			secretStore: new MemorySecretStore(),
+		});
+		base = `http://127.0.0.1:${app.server.port}`;
+	});
+
+	afterAll(async () => {
+		await app.shutdown();
+	});
+
+	test("a token is minted by default and demanded on everything with authority", async () => {
+		expect(app.authToken).toBeTruthy();
+
+		// Binding to loopback is not an authorisation boundary: any other process on the
+		// box can reach 127.0.0.1, and this server spawns agents and holds credentials.
+		for (const path of ["/api/state", "/api/credentials", "/mcp/whatever"]) {
+			expect((await fetch(`${base}${path}`)).status).toBe(401);
+		}
+		expect(
+			(
+				await fetch(`${base}/api/state`, {
+					headers: { Authorization: "Bearer wrong" },
+				})
+			).status,
+		).toBe(401);
+	});
+
+	test("the token is accepted as a bearer header or a query parameter", async () => {
+		const t = app.authToken;
+		expect(
+			(
+				await fetch(`${base}/api/state`, {
+					headers: { Authorization: `Bearer ${t}` },
+				})
+			).status,
+		).toBe(200);
+
+		// Query form exists because an <img src> and a WebSocket cannot set headers.
+		expect((await fetch(`${base}/api/state?t=${t}`)).status).toBe(200);
+	});
+
+	test("static UI assets stay reachable — the document loads before it has a token", async () => {
+		// Nothing secret is served from the UI directory, and a 401 here would mean the
+		// window could never present a token in the first place.
+		expect((await fetch(`${base}/index.html`)).status).not.toBe(401);
+	});
+});
+
 describe("watch manager", () => {
 	test("debounces, dedupes on content hash, and suppresses during agent writes", async () => {
 		const dir = tmp();
@@ -133,6 +188,7 @@ describe("http api", () => {
 			dataDir,
 			port: 0,
 			secretStore: new MemorySecretStore(),
+			authToken: null,
 		});
 		base = `http://127.0.0.1:${app.server.port}`;
 
@@ -488,6 +544,7 @@ describe("when Business Central has no parameters to give", () => {
 			dataDir,
 			port: 0,
 			secretStore: new MemorySecretStore(),
+			authToken: null,
 		});
 		base = `http://127.0.0.1:${app.server.port}`;
 
@@ -655,6 +712,103 @@ describe("agent session (fake ACP agent)", () => {
 		return { session, store, watcher, dataDir };
 	}
 
+	test("our own tools are auto-allowed even when the title hides their name", async () => {
+		const { session, store, watcher, dataDir } = await makeSession();
+		await session.start([]);
+		try {
+			// Copilot's shape: readable title, real name in rawInput.command.
+			await session.prompt("disguised");
+			expect(session.view.permission).toBeNull();
+			expect(session.view.status).not.toBe("awaiting-permission");
+
+			// Claude's shape: "mcp__layout__layout_lint". The "_" before the tool name is
+			// a word character, so a \b-anchored pattern silently fails to match here.
+			await session.prompt("prefixed");
+			expect(session.view.permission).toBeNull();
+			expect(session.view.status).not.toBe("awaiting-permission");
+		} finally {
+			await session.stop();
+			watcher.close();
+			store.close();
+			await rm(dataDir, { recursive: true, force: true });
+		}
+	});
+
+	test("a genuine write still stops and asks", async () => {
+		const { session, store, watcher, dataDir } = await makeSession();
+		await session.start([]);
+		try {
+			// The whole point of the policy: loosening tool recognition must not loosen
+			// this. An edit to a customer's layout is what a human has to see coming.
+			const turn = session.prompt("write");
+			await Bun.sleep(300);
+			expect(session.view.status).toBe("awaiting-permission");
+			expect(session.view.permission?.title).toBe("Write Default.rdl");
+			session.resolvePermission("no");
+			await turn;
+		} finally {
+			await session.stop();
+			watcher.close();
+			store.close();
+			await rm(dataDir, { recursive: true, force: true });
+		}
+	});
+
+	test("streamed reasoning is coalesced into one entry, not one per token", async () => {
+		const { session, store, watcher, dataDir } = await makeSession();
+		await session.start([]);
+		try {
+			await session.prompt("hello");
+			const thoughts = session.view.timeline.filter(
+				(i) => i.kind === "message" && i.role === "thought",
+			);
+			// Three chunks arrive; one entry must come out. A live agent produced sixty
+			// rows of one word each before this was buffered.
+			expect(thoughts).toHaveLength(1);
+			expect(thoughts[0]).toMatchObject({
+				text: "I should widen the column.",
+			});
+		} finally {
+			await session.stop();
+			watcher.close();
+			store.close();
+			await rm(dataDir, { recursive: true, force: true });
+		}
+	});
+
+	test("the agent is briefed once, on the first prompt only", async () => {
+		const { session, store, watcher, dataDir } = await makeSession();
+		await session.start([]);
+		try {
+			await session.prompt("widen the User ID column");
+			await session.prompt("now make the total row bold");
+
+			// The transcript must show what the human typed, not the briefing — that is
+			// framing for the agent, not part of the conversation.
+			const said = session.view.timeline
+				.filter((i) => i.kind === "message" && i.role === "user")
+				.map((i) => (i.kind === "message" ? i.text : ""));
+			expect(said).toEqual([
+				"widen the User ID column",
+				"now make the total row bold",
+			]);
+
+			// The fake agent echoes what it received, so the briefing is observable: it
+			// rides on the first turn and must not be repeated on the second.
+			const agentText = session.view.timeline
+				.filter((i) => i.kind === "message" && i.role === "agent")
+				.map((i) => (i.kind === "message" ? i.text : ""))
+				.join("\n");
+			const mentions = agentText.split("layout_render").length - 1;
+			expect(mentions).toBeLessThanOrEqual(1);
+		} finally {
+			await session.stop();
+			watcher.close();
+			store.close();
+			await rm(dataDir, { recursive: true, force: true });
+		}
+	});
+
 	test("session/new's modes and configOptions land on the view", async () => {
 		const { session, store, watcher, dataDir } = await makeSession();
 		await session.start([]);
@@ -705,18 +859,26 @@ describe("agent session (fake ACP agent)", () => {
 			await session.prompt("please edit it");
 
 			const kinds = session.view.timeline.map((i) =>
-				i.kind === "tool" ? `tool:${i.call.title}` : "message",
+				i.kind === "tool"
+					? `tool:${i.call.title}`
+					: i.kind === "message"
+						? i.role
+						: "?",
 			);
 			// The user's own prompt lands first, same as always. What used to be wrong is
 			// everything after it: tc-1 (render) and tc-edit both push during the turn, and
 			// the agent's own summary message is only flushed once the turn ends — so it must
 			// come last. A lumped "all messages, then all tool calls" rendering put the
 			// summary message right after the user's, ahead of the tool calls that produced it.
+			//
+			// The thought sits between the prompt and the first tool call, because reasoning
+			// is flushed by whatever ends it — here, the tool call it led to.
 			expect(kinds).toEqual([
-				"message",
+				"user",
+				"thought",
 				"tool:layout_render",
 				"tool:Edit Default.rdl",
-				"message",
+				"agent",
 			]);
 
 			const edit = session.view.timeline.find(

@@ -164,6 +164,65 @@ describe("loop controls", () => {
 	});
 });
 
+describe("convergence signals", () => {
+	test("a cached render says the file never changed, rather than implying a new result", async () => {
+		const { call } = await harness();
+		await call("layout_render", {
+			expectation: "baseline render, nothing yet",
+		});
+		const again = await call("layout_render", {
+			expectation: "widen the User ID column so SRICHARAN fits on one line",
+		});
+
+		// The trap this closes: an agent edits the wrong file, renders, sees "Render OK"
+		// and concludes its edit worked. It has to be told the bytes are identical.
+		expect(again.text).toContain("has not changed");
+		expect(again.text.toLowerCase()).toContain("did not reach the file");
+	});
+
+	test("an edit that changes bytes but moves nothing is called out", async () => {
+		const { call, layoutPath } = await harness();
+		await call("layout_render", {
+			expectation: "baseline render, nothing yet",
+		});
+
+		// A comment is a real byte change the renderer cannot possibly act on — the
+		// mechanical shape of "you edited something that does not draw anything".
+		const xml = await Bun.file(layoutPath).text();
+		await Bun.write(layoutPath, `${xml}\n<!-- a change that draws nothing -->`);
+
+		const r = await call("layout_render", {
+			expectation:
+				"the User ID column should widen and SRICHARAN stop wrapping",
+		});
+		expect(r.text).toContain("Nothing moved");
+		// And it should point at the cheap tool that answers "what actually draws this?"
+		expect(r.text).toContain("layout_locate");
+	});
+
+	test("every render states the remaining budget, so the cap is never a surprise", async () => {
+		const { call } = await harness({ limits: { maxIterations: 3 } });
+		const first = await call("layout_render", {
+			expectation: "baseline render of the untouched layout",
+		});
+		expect(first.text).toContain("2 render(s)");
+
+		const second = await call("layout_render", {
+			expectation: "second render, budget should have gone down by one",
+		});
+		expect(second.text).toContain("1 render(s)");
+	});
+
+	test("a failed render reports the budget too — a wasted round trip still counts", async () => {
+		const { call } = await harness({ fixture: "error:render" });
+		const r = await call("layout_render", {
+			expectation: "this one is going to fail against the fake tenant",
+		});
+		expect(r.isError).toBe(true);
+		expect(r.text).toContain("Budget:");
+	});
+});
+
 describe("the ladder", () => {
 	test("render returns lint, layout text and a diff, in that order", async () => {
 		const { call } = await harness();

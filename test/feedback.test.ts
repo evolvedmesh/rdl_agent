@@ -326,6 +326,8 @@ describe("external tool resolution", () => {
 		const m = missingToolMessage("pdftoppm");
 		expect(m).toContain("pdftoppm");
 		expect(m).toContain("LAYOUT_TOOLS_DIR");
-		expect(m).toContain("bin");
+		// "tools", not "bin": inside an Electrobun bundle the running binary sits in
+		// <app>/bin/ next to Electrobun's own launcher and bspatch.
+		expect(m).toContain("tools");
 	});
 });

@@ -25,6 +25,7 @@ export async function runStdioShim(
 	const sessionIdx = argv.indexOf("--session");
 	const sessionId = sessionIdx === -1 ? undefined : argv[sessionIdx + 1];
 	const port = process.env.LAYOUT_APP_PORT;
+	const token = process.env.LAYOUT_APP_TOKEN;
 
 	if (!sessionId) {
 		process.stderr.write("usage: mcp-shim --stdio --session <sessionId>\n");
@@ -70,7 +71,10 @@ export async function runStdioShim(
 			try {
 				const res = await fetch(endpoint, {
 					method: "POST",
-					headers: { "Content-Type": "application/json" },
+					headers: {
+						"Content-Type": "application/json",
+						...(token ? { Authorization: `Bearer ${token}` } : {}),
+					},
 					body: line,
 				});
 				// Notifications get a 202 with no body and take no reply.

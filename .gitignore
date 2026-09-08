@@ -6,6 +6,13 @@ dist/
 confidential.json
 secrets.json
 
+# Electrobun/Hutch generated state: the devkit SDK projection Hutch materialises
+# per-project, and the app bundles it builds. All reproducible from hutch.config.ts.
+.hutch/
+.cottontail-tmp/
+build/
+artifacts/
+
 # spike working state — renders, PDFs, images, measurement output
 .spike/
 out/
