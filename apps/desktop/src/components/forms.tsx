@@ -15,13 +15,17 @@ import {
 	SelectValue,
 } from "@gpuix/react/select";
 import { type ReactNode, useState } from "react";
-import { t } from "../theme.ts";
+import { font, radius, shadow, t } from "../theme.ts";
 import { handleWordEdit } from "./textedit.ts";
-import { Button, Col, Row, Text } from "./ui.tsx";
+import { Button, Col, IconButton, Row, Text, useBreakpoint } from "./ui.tsx";
 
 /**
  * A modal. GPUIX is single-window with no portal, so this is an absolutely positioned
  * overlay at the app root that covers everything below it.
+ *
+ * `width` is the panel's preferred width, not its actual one: a dialog wider than the
+ * window is a dialog with its buttons off-screen, so it is always clamped to what is
+ * there. The same goes for its height, which is why the body is the scrolling part.
  */
 export function Modal({
 	title,
@@ -44,6 +48,10 @@ export function Modal({
 	error?: string | null;
 	width?: number;
 }) {
+	const b = useBreakpoint();
+	const panelWidth = Math.max(300, Math.min(width, b.width - 32));
+	const panelMaxHeight = Math.max(320, b.height - 96);
+
 	return (
 		<div
 			style={{
@@ -55,41 +63,59 @@ export function Modal({
 				display: "flex",
 				flexDirection: "column",
 				alignItems: "center",
-				backgroundColor: "#000000cc",
-				paddingTop: 60,
+				justifyContent: "center",
+				padding: 16,
+				backgroundColor: t.overlay,
 			}}
 		>
 			<Col
 				gap={0}
 				style={{
-					width,
-					maxHeight: 620,
-					borderRadius: 12,
+					width: panelWidth,
+					maxHeight: panelMaxHeight,
+					minHeight: 0,
+					borderRadius: radius.xl,
 					borderWidth: 1,
 					borderColor: t.borderStrong,
 					backgroundColor: t.bgPanel,
+					boxShadow: shadow.lg,
 				}}
 			>
-				<Col
-					gap={3}
-					style={{ padding: 16, borderBottomWidth: 1, borderColor: t.border }}
+				<Row
+					gap={10}
+					align="flex-start"
+					style={{
+						paddingLeft: 18,
+						paddingRight: 12,
+						paddingTop: 16,
+						paddingBottom: 14,
+						borderBottomWidth: 1,
+						borderColor: t.border,
+						flexShrink: 0,
+					}}
 				>
-					<Text size={15} weight={600}>
-						{title}
-					</Text>
-					{subtitle ? (
-						<Text color={t.textDim} size={12}>
-							{subtitle}
+					<Col gap={3} style={{ flexGrow: 1, minWidth: 0 }}>
+						<Text size={font.lg} weight={600} clamp={2}>
+							{title}
 						</Text>
-					) : null}
-				</Col>
+						{subtitle ? (
+							<Text color={t.textDim} size={font.base} lineHeight={18}>
+								{subtitle}
+							</Text>
+						) : null}
+					</Col>
+					<IconButton glyph="✕" title="close dialog" onClick={onClose} />
+				</Row>
 
 				<div
 					style={{
 						display: "flex",
 						flexDirection: "column",
-						gap: 12,
-						padding: 16,
+						gap: 13,
+						paddingLeft: 18,
+						paddingRight: 18,
+						paddingTop: 16,
+						paddingBottom: 16,
 						overflowY: "scroll",
 						flexGrow: 1,
 						minHeight: 0,
@@ -102,20 +128,33 @@ export function Modal({
 					<div
 						style={{
 							display: "flex",
-							paddingLeft: 16,
-							paddingRight: 16,
-							paddingTop: 8,
-							paddingBottom: 8,
-							backgroundColor: "#2a1719",
+							flexShrink: 0,
+							paddingLeft: 18,
+							paddingRight: 18,
+							paddingTop: 10,
+							paddingBottom: 10,
+							backgroundColor: t.dangerSoft,
+							borderTopWidth: 1,
+							borderColor: "#5c2f33",
 						}}
 					>
-						<text style={{ color: t.danger, fontSize: 12 }}>{error}</text>
+						<text style={{ color: t.danger, fontSize: font.base }}>
+							{error}
+						</text>
 					</div>
 				) : null}
 
 				<Row
 					gap={8}
-					style={{ padding: 14, borderTopWidth: 1, borderColor: t.border }}
+					style={{
+						padding: 14,
+						borderTopWidth: 1,
+						borderColor: t.border,
+						backgroundColor: t.bgSunken,
+						borderBottomLeftRadius: radius.xl,
+						borderBottomRightRadius: radius.xl,
+						flexShrink: 0,
+					}}
 				>
 					<div style={{ flexGrow: 1 }} />
 					<Button label="Cancel" variant="ghost" onClick={onClose} />
@@ -138,36 +177,47 @@ export function Dropdown({
 	value,
 	options,
 	placeholder,
+	hint,
 	onChange,
 }: {
 	label: string;
 	value: string | null;
 	options: { value: string; label: string }[];
 	placeholder?: string;
+	hint?: string;
 	onChange: (v: string) => void;
 }) {
 	const current = options.find((o) => o.value === value);
 	return (
 		<Col gap={5}>
-			<Text color={t.textDim} size={11.5}>
+			<Text color={t.textDim} size={font.sm} weight={500}>
 				{label}
 			</Text>
 			<Select value={value ?? undefined} onValueChange={onChange}>
 				<SelectTrigger
 					style={{
-						backgroundColor: t.bg,
+						display: "flex",
+						flexDirection: "row",
+						alignItems: "center",
+						backgroundColor: t.bgSunken,
 						borderWidth: 1,
 						borderColor: t.borderStrong,
-						borderRadius: 6,
-						paddingLeft: 9,
-						paddingRight: 9,
-						paddingTop: 6,
-						paddingBottom: 6,
+						borderRadius: radius.sm,
+						paddingLeft: 10,
+						paddingRight: 10,
+						paddingTop: 7,
+						paddingBottom: 7,
+						cursor: "pointer",
+						hover: { borderColor: t.borderFocus },
 					}}
 				>
 					<SelectValue placeholder={placeholder ?? "Select…"}>
 						<text
-							style={{ color: current ? t.text : t.textFaint, fontSize: 12.5 }}
+							style={{
+								color: current ? t.text : t.textFaint,
+								fontSize: font.base,
+								lineClamp: 1,
+							}}
 						>
 							{current?.label ?? placeholder ?? "Select…"}
 						</text>
@@ -178,7 +228,8 @@ export function Dropdown({
 						backgroundColor: t.bgRaised,
 						borderWidth: 1,
 						borderColor: t.borderStrong,
-						borderRadius: 8,
+						borderRadius: radius.md,
+						boxShadow: shadow.md,
 						padding: 4,
 					}}
 				>
@@ -187,18 +238,25 @@ export function Dropdown({
 							key={o.value}
 							value={o.value}
 							style={{
-								paddingLeft: 8,
-								paddingRight: 8,
-								paddingTop: 5,
-								paddingBottom: 5,
-								borderRadius: 5,
+								paddingLeft: 9,
+								paddingRight: 9,
+								paddingTop: 6,
+								paddingBottom: 6,
+								borderRadius: radius.xs,
 							}}
 						>
-							<text style={{ color: t.text, fontSize: 12.5 }}>{o.label}</text>
+							<text style={{ color: t.text, fontSize: font.base }}>
+								{o.label}
+							</text>
 						</SelectItem>
 					))}
 				</SelectContent>
 			</Select>
+			{hint ? (
+				<Text color={t.textFaint} size={font.xs}>
+					{hint}
+				</Text>
+			) : null}
 		</Col>
 	);
 }
@@ -221,7 +279,7 @@ export function TextArea({
 }) {
 	return (
 		<Col gap={5}>
-			<Text color={t.textDim} size={11.5}>
+			<Text color={t.textDim} size={font.sm} weight={500}>
 				{label}
 			</Text>
 			<textarea
@@ -233,21 +291,23 @@ export function TextArea({
 				// Ctrl/Alt+Backspace word delete — not in GPUIX 0.7's Linux keymap.
 				onKeyDown={(e) => handleWordEdit(e, value, onChange)}
 				style={{
-					backgroundColor: t.bg,
+					backgroundColor: t.bgSunken,
 					color: t.text,
-					fontSize: 11.5,
+					fontSize: font.sm,
 					fontFamily: t.mono,
+					lineHeight: 17,
 					borderWidth: 1,
 					borderColor: t.borderStrong,
-					borderRadius: 6,
-					paddingLeft: 9,
-					paddingRight: 9,
-					paddingTop: 7,
-					paddingBottom: 7,
+					borderRadius: radius.sm,
+					paddingLeft: 10,
+					paddingRight: 10,
+					paddingTop: 8,
+					paddingBottom: 8,
+					hover: { borderColor: t.borderFocus },
 				}}
 			/>
 			{hint ? (
-				<Text color={t.textFaint} size={11}>
+				<Text color={t.textFaint} size={font.xs}>
 					{hint}
 				</Text>
 			) : null}

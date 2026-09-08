@@ -11,7 +11,9 @@
  *
  * Layout note: the chat scroller and the PDF scroller are siblings, never nested. GPUI
  * does not support nested scrolling — an inner scroller swallows the wheel gesture — and
- * a two-pane split is exactly the arrangement that stays legal.
+ * a two-pane split is exactly the arrangement that stays legal. Below `bp.compact` there
+ * is no room for two panes at all, so the split becomes a switcher and only one of the
+ * two scrollers is mounted at a time — which keeps that rule true by construction.
  */
 
 import type { EventPayload, PublicInstance } from "@gpuix/react";
@@ -42,17 +44,37 @@ import {
 import type { Api } from "../api.ts";
 import { PdfPane } from "../components/PdfPane.tsx";
 import { handleWordEdit } from "../components/textedit.ts";
-import { Badge, Button, Col, Row, Text } from "../components/ui.tsx";
-import { t } from "../theme.ts";
+import {
+	Badge,
+	Button,
+	Col,
+	Dot,
+	IconButton,
+	Row,
+	Segmented,
+	Spacer,
+	Text,
+	useBreakpoint,
+} from "../components/ui.tsx";
+import { font, radius, shadow, type Tone, t } from "../theme.ts";
 
-const statusTone: Record<string, string> = {
-	starting: t.textDim,
-	idle: t.ok,
-	thinking: t.accent,
-	"awaiting-permission": t.warn,
-	error: t.danger,
-	stopped: t.textFaint,
+const statusToneOf = (status: string): Tone => {
+	switch (status) {
+		case "idle":
+			return "ok";
+		case "thinking":
+		case "starting":
+			return "accent";
+		case "awaiting-permission":
+			return "warn";
+		case "error":
+			return "danger";
+		default:
+			return "neutral";
+	}
 };
+
+type Pane = "chat" | "preview";
 
 export function Session({
 	api,
@@ -71,10 +93,12 @@ export function Session({
 	layoutTitle: string;
 	onClose: () => void;
 }) {
+	const b = useBreakpoint();
 	const [draft, setDraft] = useState("");
 	const [sending, setSending] = useState(false);
 	const [resuming, setResuming] = useState(false);
 	const [showFirst, setShowFirst] = useState(false);
+	const [pane, setPane] = useState<Pane>("chat");
 
 	const busy = session.status === "thinking" || session.status === "starting";
 	// No live agent behind it: a chat restored from a past run, or one that has been
@@ -82,6 +106,13 @@ export function Session({
 	const inactive = session.status === "stopped" || session.status === "error";
 
 	const queued = queues.reduce((n, q) => n + q.depth, 0);
+
+	// The conversation wants a comfortable measure, the page wants everything else. A
+	// percentage rather than a constant so a 2560px window does not read as one column of
+	// chat beside an ocean of grey.
+	const chatWidth = Math.round(
+		Math.max(400, Math.min(560, (b.width - 244) * 0.36)),
+	);
 
 	const send = async () => {
 		const text = draft.trim();
@@ -120,148 +151,174 @@ export function Session({
 		return parts.join(" · ");
 	}, [session.usage]);
 
+	const showChat = !b.compact || pane === "chat";
+	const showPreview = !b.compact || pane === "preview";
+
+	const chat = (
+		<Col
+			gap={0}
+			grow={b.compact ? 1 : undefined}
+			style={{
+				// flexShrink: 0 is load-bearing, not decorative — found by bisecting a real
+				// layout bug via screenshot: without it, a fixed width is only a flex *basis*.
+				// Nested this many levels deep (sidebar row > content column > this row),
+				// Taffy let the fixed-width pane collapse toward its content's own min-content
+				// width alongside the flexGrow PDF pane, and long agent prose that had nowhere
+				// to wrap into rendered one word — sometimes one character — per line. Short
+				// tool titles never revealed it; only a real multi-sentence completion message
+				// did.
+				width: b.compact ? undefined : chatWidth,
+				minWidth: 0,
+				flexShrink: 0,
+				borderRightWidth: b.compact ? 0 : 1,
+				borderColor: t.border,
+				backgroundColor: t.bg,
+			}}
+		>
+			{session.plan.length > 0 ? <Plan entries={session.plan} /> : null}
+
+			<ConversationScroller timeline={session.timeline} error={session.error} />
+
+			{session.permission ? (
+				<PermissionPrompt
+					permission={session.permission}
+					onAnswer={(id) => void api.answerPermission(session.id, id)}
+				/>
+			) : null}
+
+			{inactive ? (
+				<ResumeBar
+					restored={session.restored}
+					error={session.error}
+					resuming={resuming}
+					onResume={() => void resume()}
+				/>
+			) : null}
+
+			<Composer
+				value={draft}
+				onChange={setDraft}
+				onSend={send}
+				disabled={busy || sending || inactive}
+				busy={busy}
+				modeOption={modeOption}
+				modelOption={modelOption}
+				modeId={session.modeId}
+				providerName={session.providerName}
+				onSetMode={(v) => void api.setSessionMode(session.id, v)}
+				onSetModel={(v) => void api.setSessionModel(session.id, v)}
+			/>
+		</Col>
+	);
+
+	const preview = (
+		<Col gap={0} grow={1} style={{ minWidth: 0, minHeight: 0 }}>
+			{session.firstPdfPath &&
+			session.latestPdfPath &&
+			session.firstPdfPath !== session.latestPdfPath ? (
+				<Row
+					gap={8}
+					style={{
+						paddingLeft: 12,
+						paddingRight: 8,
+						paddingTop: 6,
+						paddingBottom: 6,
+						backgroundColor: showFirst ? t.warnSoft : t.bgRaised,
+						borderBottomWidth: 1,
+						borderColor: showFirst ? "#4a3f20" : t.border,
+						flexShrink: 0,
+					}}
+				>
+					<Dot color={showFirst ? t.warn : t.textFaint} />
+					<Text color={showFirst ? t.warn : t.textDim} size={font.sm} clamp={1}>
+						{showFirst
+							? "Showing the first render of this session"
+							: "Showing the latest render"}
+					</Text>
+					<Spacer />
+					<Button
+						label={showFirst ? "Show latest" : "Compare with first"}
+						size="sm"
+						variant="ghost"
+						onClick={() => setShowFirst((v) => !v)}
+					/>
+				</Row>
+			) : null}
+
+			<PdfPane
+				api={api}
+				layoutId={session.layoutId}
+				pageCount={pageCount}
+				version={showFirst ? 0 : renderVersion}
+				title={layoutTitle}
+			/>
+		</Col>
+	);
+
 	return (
 		<Col gap={0} grow={1} style={{ minHeight: 0 }}>
-			<Row
-				gap={10}
+			<Col
+				gap={b.compact ? 9 : 0}
 				style={{
-					paddingLeft: 16,
-					paddingRight: 16,
-					paddingTop: 10,
-					paddingBottom: 10,
+					paddingLeft: 10,
+					paddingRight: 12,
+					paddingTop: 9,
+					paddingBottom: 9,
 					borderBottomWidth: 1,
 					borderColor: t.border,
 					backgroundColor: t.bgPanel,
+					flexShrink: 0,
 				}}
 			>
-				<Button label="‹ Back" variant="ghost" onClick={onClose} />
-				<Col gap={2} style={{ minWidth: 0 }}>
-					<Text size={13} weight={600} clamp={1}>
-						{layoutTitle}
-					</Text>
-					<Text color={t.textFaint} size={11}>
-						{`${session.providerName}${session.acceptsImages ? " · images supported" : " · text-only (no image capability)"}`}
-					</Text>
-				</Col>
-				<div style={{ flexGrow: 1 }} />
-				{queued > 0 ? (
-					<Badge label={`rendering · ${queued} queued`} color={t.accent} />
-				) : null}
-				{cost ? (
-					<Text color={t.textDim} size={11.5} mono>
-						{cost}
-					</Text>
-				) : null}
-				<Badge
-					label={session.status}
-					color={statusTone[session.status] ?? t.textDim}
-				/>
-				{busy ? (
-					<Button
-						label="Stop"
-						variant="danger"
-						onClick={() => void api.cancelSession(session.id)}
+				<Row gap={10}>
+					<IconButton glyph="‹" title="back" onClick={onClose} size={28} />
+					<Col gap={2} style={{ minWidth: 0, flexGrow: 1 }}>
+						<Text size={font.md} weight={600} clamp={1}>
+							{layoutTitle}
+						</Text>
+						<Text color={t.textFaint} size={font.xs} clamp={1}>
+							{`${session.providerName}${session.acceptsImages ? " · images supported" : " · text-only (no image capability)"}`}
+						</Text>
+					</Col>
+					{queued > 0 ? (
+						<Badge label={`${queued} queued`} tone="accent" dot />
+					) : null}
+					{cost && !b.narrow ? (
+						<Text color={t.textDim} size={font.xs} mono>
+							{cost}
+						</Text>
+					) : null}
+					<Badge
+						label={session.status}
+						tone={statusToneOf(session.status)}
+						dot
+					/>
+					{busy ? (
+						<Button
+							label="Stop"
+							size="sm"
+							variant="danger"
+							onClick={() => void api.cancelSession(session.id)}
+						/>
+					) : null}
+				</Row>
+
+				{b.compact ? (
+					<Segmented<Pane>
+						value={pane}
+						grow
+						onChange={setPane}
+						options={[
+							{ value: "chat", label: "Conversation" },
+							{ value: "preview", label: "Preview" },
+						]}
 					/>
 				) : null}
-			</Row>
+			</Col>
 
 			<Row gap={0} grow={1} align="stretch" style={{ minHeight: 0 }}>
-				{/* Left: conversation. Its own scroller. */}
-				{/*
-          flexShrink: 0 is load-bearing, not decorative — found by bisecting a real
-          layout bug via screenshot: without it, `width: 460` is only a flex *basis*.
-          Nested this many levels deep (sidebar row > content column > this row), Taffy
-          let the fixed-width pane collapse toward its content's own min-content width
-          alongside the flexGrow PDF pane, and long agent prose that had nowhere to
-          wrap into rendered one word — sometimes one character — per line. Short tool
-          titles never revealed it; only a real multi-sentence completion message did.
-        */}
-				<Col
-					gap={0}
-					style={{
-						width: 460,
-						minWidth: 0,
-						flexShrink: 0,
-						borderRightWidth: 1,
-						borderColor: t.border,
-					}}
-				>
-					{session.plan.length > 0 ? <Plan entries={session.plan} /> : null}
-
-					<ConversationScroller
-						timeline={session.timeline}
-						error={session.error}
-					/>
-
-					{session.permission ? (
-						<PermissionPrompt
-							permission={session.permission}
-							onAnswer={(id) => void api.answerPermission(session.id, id)}
-						/>
-					) : null}
-
-					{inactive ? (
-						<ResumeBar
-							restored={session.restored}
-							error={session.error}
-							resuming={resuming}
-							onResume={() => void resume()}
-						/>
-					) : null}
-
-					<Composer
-						value={draft}
-						onChange={setDraft}
-						onSend={send}
-						disabled={busy || sending || inactive}
-						modeOption={modeOption}
-						modelOption={modelOption}
-						modeId={session.modeId}
-						providerName={session.providerName}
-						onSetMode={(v) => void api.setSessionMode(session.id, v)}
-						onSetModel={(v) => void api.setSessionModel(session.id, v)}
-					/>
-				</Col>
-
-				{/* Right: the render. A sibling scroller, never nested inside the chat's. */}
-				<Col gap={0} grow={1} style={{ minWidth: 0 }}>
-					{session.firstPdfPath &&
-					session.latestPdfPath &&
-					session.firstPdfPath !== session.latestPdfPath ? (
-						<Row
-							gap={8}
-							style={{
-								paddingLeft: 12,
-								paddingRight: 12,
-								paddingTop: 6,
-								paddingBottom: 6,
-								backgroundColor: t.bgRaised,
-								borderBottomWidth: 1,
-								borderColor: t.border,
-							}}
-						>
-							<Text color={t.textDim} size={11.5}>
-								{showFirst
-									? "Showing the first render of this session"
-									: "Showing the latest render"}
-							</Text>
-							<div style={{ flexGrow: 1 }} />
-							<Button
-								label={showFirst ? "Show latest" : "Compare with first"}
-								variant="ghost"
-								onClick={() => setShowFirst((v) => !v)}
-							/>
-						</Row>
-					) : null}
-
-					<PdfPane
-						api={api}
-						layoutId={session.layoutId}
-						pageCount={pageCount}
-						version={showFirst ? 0 : renderVersion}
-						title={layoutTitle}
-					/>
-				</Col>
+				{showChat ? chat : null}
+				{showPreview ? preview : null}
 			</Row>
 		</Col>
 	);
@@ -370,21 +427,7 @@ function ConversationScroller({
 	const blocks = useMemo<{ key: string; node: ReactNode }[]>(() => {
 		const out: { key: string; node: ReactNode }[] = [];
 		if (timeline.length === 0) {
-			out.push({
-				key: "hint",
-				node: (
-					<Col gap={6}>
-						<Text color={t.textDim} size={12.5}>
-							Describe the change you want.
-						</Text>
-						<Text color={t.textFaint} size={11.5}>
-							The agent can render this layout, read the page as text, diff the
-							geometry against the previous render, look at a page image, and
-							trace a rendered value back to the element that produced it.
-						</Text>
-					</Col>
-				),
-			});
+			out.push({ key: "hint", node: <ConversationHint /> });
 		} else {
 			for (const item of timeline) {
 				out.push({
@@ -405,14 +448,16 @@ function ConversationScroller({
 					<div
 						style={{
 							display: "flex",
-							padding: 10,
-							borderRadius: 6,
+							padding: 11,
+							borderRadius: radius.md,
 							borderWidth: 1,
 							borderColor: "#5c2f33",
-							backgroundColor: "#2a1719",
+							backgroundColor: t.dangerSoft,
 						}}
 					>
-						<text style={{ color: t.danger, fontSize: 12 }}>{error}</text>
+						<text style={{ color: t.danger, fontSize: font.base }}>
+							{error}
+						</text>
 					</div>
 				),
 			});
@@ -428,11 +473,14 @@ function ConversationScroller({
 				display: "flex",
 				flexDirection: "column",
 				alignItems: "stretch",
-				gap: 10,
+				gap: 12,
 				overflowY: "scroll",
 				flexGrow: 1,
 				minHeight: 0,
-				padding: 14,
+				paddingLeft: 14,
+				paddingRight: 14,
+				paddingTop: 14,
+				paddingBottom: 14,
 			}}
 		>
 			{blocks.map((b) => (
@@ -457,6 +505,37 @@ function ConversationScroller({
 	);
 }
 
+function ConversationHint() {
+	const abilities = [
+		"render this layout against Business Central",
+		"read the rendered page back as text",
+		"diff the geometry against the previous render",
+		"look at a page image",
+		"trace a rendered value back to the element that produced it",
+	];
+	return (
+		<Col gap={11} style={{ paddingTop: 6 }}>
+			<Text color={t.text} size={font.md} weight={600}>
+				Describe the change you want
+			</Text>
+			<Col gap={7}>
+				{abilities.map((a) => (
+					<Row key={a} gap={8} align="flex-start">
+						<div style={{ paddingTop: 5 }}>
+							<Dot color={t.accentDim} size={4} />
+						</div>
+						<Col style={{ flexGrow: 1, minWidth: 0 }}>
+							<Text color={t.textFaint} size={font.sm} lineHeight={17}>
+								{a}
+							</Text>
+						</Col>
+					</Row>
+				))}
+			</Col>
+		</Col>
+	);
+}
+
 function Message({
 	role,
 	text,
@@ -466,32 +545,80 @@ function Message({
 }) {
 	if (role === "thought") {
 		return (
-			<div style={{ display: "flex", paddingLeft: 8 }}>
-				<text style={{ color: t.textFaint, fontSize: 11.5 }}>{text}</text>
+			<div
+				style={{
+					display: "flex",
+					flexDirection: "row",
+					gap: 8,
+					paddingLeft: 2,
+				}}
+			>
+				<div
+					style={{
+						width: 2,
+						alignSelf: "stretch",
+						flexShrink: 0,
+						borderRadius: radius.pill,
+						backgroundColor: t.border,
+					}}
+				/>
+				<div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+					<text
+						style={{
+							color: t.textFaint,
+							fontSize: font.sm,
+							lineHeight: 17,
+						}}
+					>
+						{text}
+					</text>
+				</div>
 			</div>
 		);
 	}
 	const isUser = role === "user";
 	return (
-		<div
-			style={{
-				display: "flex",
-				flexDirection: "column",
-				minWidth: 0,
-				padding: 10,
-				borderRadius: 8,
-				backgroundColor: isUser ? t.bgActive : t.bgPanel,
-				borderWidth: 1,
-				borderColor: isUser ? t.borderStrong : t.border,
-			}}
-		>
-			{isUser ? (
-				<text style={{ color: t.text, fontSize: 12.5 }}>{text}</text>
-			) : (
-				// markdown is native here — no npm dependency to style and keep current.
-				<markdown source={text} style={{ color: t.text, fontSize: 12.5 }} />
-			)}
-		</div>
+		<Col gap={6} style={{ minWidth: 0 }}>
+			<Row gap={6}>
+				<Dot color={isUser ? t.accent : t.ok} size={5} />
+				<text
+					style={{
+						color: t.textFaint,
+						fontSize: font.xs,
+						fontWeight: 600,
+					}}
+				>
+					{isUser ? "YOU" : "AGENT"}
+				</text>
+			</Row>
+			<div
+				style={{
+					display: "flex",
+					flexDirection: "column",
+					minWidth: 0,
+					paddingLeft: 12,
+					paddingRight: 12,
+					paddingTop: 10,
+					paddingBottom: 10,
+					borderRadius: radius.lg,
+					backgroundColor: isUser ? t.accentSoft : t.bgPanel,
+					borderWidth: 1,
+					borderColor: isUser ? "#2d4478" : t.border,
+				}}
+			>
+				{isUser ? (
+					<text style={{ color: t.text, fontSize: font.base, lineHeight: 18 }}>
+						{text}
+					</text>
+				) : (
+					// markdown is native here — no npm dependency to style and keep current.
+					<markdown
+						source={text}
+						style={{ color: t.text, fontSize: font.base }}
+					/>
+				)}
+			</div>
+		</Col>
 	);
 }
 
@@ -500,21 +627,59 @@ function Plan({
 }: {
 	entries: { content: string; status?: string; priority?: string }[];
 }) {
+	const done = entries.filter((e) => e.status === "completed").length;
 	return (
 		<Col
-			gap={5}
+			gap={7}
 			style={{
-				padding: 12,
-				backgroundColor: t.bgRaised,
+				paddingLeft: 14,
+				paddingRight: 14,
+				paddingTop: 11,
+				paddingBottom: 11,
+				backgroundColor: t.bgPanel,
 				borderBottomWidth: 1,
 				borderColor: t.border,
+				flexShrink: 0,
 			}}
 		>
-			<Text color={t.textDim} size={11} weight={600}>
-				PLAN
-			</Text>
+			<Row gap={8}>
+				<text
+					style={{ color: t.textFaint, fontSize: font.xs, fontWeight: 600 }}
+				>
+					PLAN
+				</text>
+				<Spacer />
+				<text
+					style={{ color: t.textFaint, fontSize: font.xs, fontFamily: t.mono }}
+				>
+					{`${done}/${entries.length}`}
+				</text>
+			</Row>
+
+			{/* A bar, not a spinner: the only honest progress signal available is how many
+          of the agent's own steps it has closed. */}
+			<div
+				style={{
+					display: "flex",
+					flexDirection: "row",
+					height: 3,
+					borderRadius: radius.pill,
+					backgroundColor: t.bgSunken,
+					overflow: "hidden",
+				}}
+			>
+				<div
+					style={{
+						flexGrow: Math.max(done, 0.0001),
+						backgroundColor: t.ok,
+						borderRadius: radius.pill,
+					}}
+				/>
+				<div style={{ flexGrow: Math.max(entries.length - done, 0.0001) }} />
+			</div>
+
 			{entries.map((e, i) => (
-				<Row key={i} gap={7} align="flex-start">
+				<Row key={`${i}-${e.content}`} gap={8} align="flex-start">
 					<text
 						style={{
 							color:
@@ -523,7 +688,7 @@ function Plan({
 									: e.status === "in_progress"
 										? t.accent
 										: t.textFaint,
-							fontSize: 12,
+							fontSize: font.base,
 						}}
 					>
 						{e.status === "completed"
@@ -532,14 +697,17 @@ function Plan({
 								? "◐"
 								: "○"}
 					</text>
-					<text
-						style={{
-							color: e.status === "completed" ? t.textFaint : t.text,
-							fontSize: 12,
-						}}
-					>
-						{e.content}
-					</text>
+					<Col style={{ flexGrow: 1, minWidth: 0 }}>
+						<text
+							style={{
+								color: e.status === "completed" ? t.textFaint : t.text,
+								fontSize: font.base,
+								lineHeight: 17,
+							}}
+						>
+							{e.content}
+						</text>
+					</Col>
 				</Row>
 			))}
 		</Col>
@@ -568,7 +736,20 @@ function ToolCallRow({ call }: { call: ToolCallView }) {
 		call.status === "failed" ? "✕" : call.status === "completed" ? "✓" : "…";
 
 	return (
-		<Col gap={5} style={{ minWidth: 0, paddingTop: 2, paddingBottom: 2 }}>
+		<Col
+			gap={6}
+			style={{
+				minWidth: 0,
+				paddingLeft: 10,
+				paddingRight: 10,
+				paddingTop: 8,
+				paddingBottom: 8,
+				borderRadius: radius.md,
+				borderWidth: 1,
+				borderColor: t.border,
+				backgroundColor: t.bgSunken,
+			}}
+		>
 			{/*
         minWidth: 0 on the row and its title cell, one-line clamp on the title itself:
         a tool call's title can be a whole shell command with nowhere natural to break,
@@ -576,15 +757,29 @@ function ToolCallRow({ call }: { call: ToolCallView }) {
         and overlap the row below it — confirmed by screenshot, the same collapse this
         file fixes twice already, for the message text and the code/diff blocks.
       */}
-			<Row gap={7} style={{ minWidth: 0 }}>
-				<text style={{ color: tone, fontSize: 11 }}>{glyph}</text>
+			<Row gap={8} style={{ minWidth: 0 }}>
+				<div
+					style={{
+						display: "flex",
+						alignItems: "center",
+						justifyContent: "center",
+						width: 15,
+						height: 15,
+						flexShrink: 0,
+						borderRadius: radius.pill,
+						backgroundColor: t.bgRaised,
+					}}
+				>
+					<text style={{ color: tone, fontSize: 9 }}>{glyph}</text>
+				</div>
 				<Col style={{ flexGrow: 1, minWidth: 0 }}>
-					<Text color={t.textDim} size={11.5} mono clamp={1}>
+					<Text color={t.textDim} size={font.sm} mono clamp={1}>
 						{call.title}
 					</Text>
 				</Col>
-				{call.kind ? <Badge label={call.kind} color={t.textFaint} /> : null}
+				{call.kind ? <Badge label={call.kind} /> : null}
 			</Row>
+
 			{call.locations.length > 0 ? (
 				// clamp: an absolute temp-dir path is one long token with almost no natural
 				// break point, and letting it wrap free is what collapsed it to one path
@@ -593,14 +788,15 @@ function ToolCallRow({ call }: { call: ToolCallView }) {
 				// is the right call on its own merits, not just a workaround.
 				<Text
 					color={t.textFaint}
-					size={10.5}
+					size={font.xs}
 					mono
 					clamp={1}
-					style={{ paddingLeft: 18 }}
+					style={{ paddingLeft: 23 }}
 				>
 					{call.locations.join(", ")}
 				</Text>
 			) : null}
+
 			{call.diffPatch ? (
 				// A horizontal-only scroller, not the diff's own vertical one: `<diff>` does
 				// not wrap long lines, and RDL's XML runs well past this pane's width — without
@@ -614,7 +810,7 @@ function ToolCallRow({ call }: { call: ToolCallView }) {
 						display: "flex",
 						flexDirection: "column",
 						minWidth: 0,
-						marginLeft: 18,
+						marginLeft: 23,
 						overflowX: "scroll",
 					}}
 				>
@@ -624,7 +820,7 @@ function ToolCallRow({ call }: { call: ToolCallView }) {
 						scroll={false}
 						maxLines={200}
 						style={{
-							borderRadius: 6,
+							borderRadius: radius.sm,
 							borderWidth: 1,
 							borderColor: t.border,
 							fontSize: 11,
@@ -642,7 +838,7 @@ function ToolCallRow({ call }: { call: ToolCallView }) {
 						display: "flex",
 						flexDirection: "column",
 						minWidth: 0,
-						marginLeft: 18,
+						marginLeft: 23,
 						overflowX: "scroll",
 					}}
 				>
@@ -652,7 +848,7 @@ function ToolCallRow({ call }: { call: ToolCallView }) {
 						style={{
 							fontSize: 11,
 							backgroundColor: t.bg,
-							borderRadius: 6,
+							borderRadius: radius.sm,
 							padding: 8,
 							maxHeight: 160,
 						}}
@@ -680,34 +876,38 @@ function ResumeBar({
 	onResume: () => void;
 }) {
 	return (
-		<Col
-			gap={7}
+		<Row
+			gap={10}
 			style={{
-				padding: 11,
+				paddingLeft: 14,
+				paddingRight: 12,
+				paddingTop: 10,
+				paddingBottom: 10,
 				backgroundColor: t.bgRaised,
 				borderTopWidth: 1,
 				borderColor: t.border,
+				flexShrink: 0,
 			}}
 		>
-			<Text color={t.textDim} size={11.5}>
-				{restored
-					? "This conversation was restored from a previous run."
-					: "This conversation has stopped."}
-			</Text>
-			{error ? (
-				<Text color={t.danger} size={11}>
-					{error}
+			<Col gap={3} style={{ flexGrow: 1, minWidth: 0 }}>
+				<Text color={t.textDim} size={font.sm}>
+					{restored
+						? "This conversation was restored from a previous run."
+						: "This conversation has stopped."}
 				</Text>
-			) : null}
-			<Row gap={7}>
-				<Button
-					label={resuming ? "Resuming…" : "Resume"}
-					variant="primary"
-					onClick={onResume}
-					disabled={resuming}
-				/>
-			</Row>
-		</Col>
+				{error ? (
+					<Text color={t.danger} size={font.xs} clamp={2}>
+						{error}
+					</Text>
+				) : null}
+			</Col>
+			<Button
+				label={resuming ? "Resuming…" : "Resume"}
+				variant="primary"
+				onClick={onResume}
+				disabled={resuming}
+			/>
+		</Row>
 	);
 }
 
@@ -724,18 +924,22 @@ function PermissionPrompt({
 }) {
 	return (
 		<Col
-			gap={9}
+			gap={10}
 			style={{
-				padding: 12,
-				backgroundColor: "#2a2416",
+				padding: 13,
+				backgroundColor: t.warnSoft,
 				borderTopWidth: 1,
 				borderColor: "#4a3f20",
+				flexShrink: 0,
 			}}
 		>
-			<Text color={t.warn} size={12} weight={600}>
-				The agent is asking for permission
-			</Text>
-			<Text color={t.text} size={12.5}>
+			<Row gap={7}>
+				<Dot color={t.warn} />
+				<text style={{ color: t.warn, fontSize: font.sm, fontWeight: 600 }}>
+					PERMISSION REQUESTED
+				</text>
+			</Row>
+			<Text color={t.text} size={font.base} lineHeight={18}>
 				{permission.title}
 			</Text>
 			{permission.rawInput ? (
@@ -756,8 +960,8 @@ function PermissionPrompt({
 						language="json"
 						style={{
 							fontSize: 11,
-							backgroundColor: t.bg,
-							borderRadius: 6,
+							backgroundColor: t.bgSunken,
+							borderRadius: radius.sm,
 							padding: 8,
 							maxHeight: 160,
 						}}
@@ -769,12 +973,14 @@ function PermissionPrompt({
 					<Button
 						key={o.optionId}
 						label={o.name}
+						size="sm"
 						variant={o.kind.startsWith("allow") ? "primary" : "default"}
 						onClick={() => onAnswer(o.optionId)}
 					/>
 				))}
 				<Button
 					label="Cancel turn"
+					size="sm"
 					variant="ghost"
 					onClick={() => onAnswer(null)}
 				/>
@@ -794,6 +1000,7 @@ function Composer({
 	onChange,
 	onSend,
 	disabled,
+	busy,
 	modeOption,
 	modelOption,
 	modeId,
@@ -805,6 +1012,7 @@ function Composer({
 	onChange: (v: string) => void;
 	onSend: () => void;
 	disabled: boolean;
+	busy: boolean;
 	modeOption?: ConfigOption;
 	modelOption?: ConfigOption;
 	modeId: string | null;
@@ -814,17 +1022,20 @@ function Composer({
 }) {
 	return (
 		<Col
-			gap={7}
+			gap={8}
 			style={{
 				padding: 11,
 				borderTopWidth: 1,
 				borderColor: t.border,
 				backgroundColor: t.bgPanel,
+				flexShrink: 0,
 			}}
 		>
 			<textarea
 				value={value}
-				placeholder="Do this and that.."
+				placeholder={
+					busy ? "The agent is working…" : "Describe the change you want…"
+				}
 				minRows={2}
 				maxRows={6}
 				onChange={(e) => onChange(e.value ?? "")}
@@ -838,19 +1049,22 @@ function Composer({
 				// components/textedit.ts for what this does and does not cover.
 				onKeyDown={(e) => handleWordEdit(e, value, onChange)}
 				style={{
-					backgroundColor: t.bg,
+					backgroundColor: t.bgSunken,
 					color: t.text,
-					fontSize: 12.5,
+					fontSize: font.base,
+					lineHeight: 18,
 					borderWidth: 1,
 					borderColor: t.borderStrong,
-					borderRadius: 7,
-					paddingLeft: 9,
-					paddingRight: 9,
-					paddingTop: 7,
-					paddingBottom: 7,
+					borderRadius: radius.md,
+					paddingLeft: 11,
+					paddingRight: 11,
+					paddingTop: 9,
+					paddingBottom: 9,
+					boxShadow: shadow.sm,
+					hover: { borderColor: t.borderFocus },
 				}}
 			/>
-			<Row gap={7}>
+			<Row gap={7} wrap>
 				{modeOption ? (
 					<PickerPill
 						value={modeId}
@@ -874,17 +1088,18 @@ function Composer({
 					/>
 				) : null}
 				{!modeOption && !modelOption ? (
-					<Text color={t.textFaint} size={10.5}>
+					<Text color={t.textFaint} size={font.xs} clamp={1}>
 						{`${providerName} has no permission mode or model to switch here.`}
 					</Text>
 				) : null}
-				<div style={{ flexGrow: 1 }} />
-				<Text color={t.textFaint} size={11}>
+				<Spacer />
+				<Text color={t.textFaint} size={font.xs}>
 					Enter to send
 				</Text>
 				<Button
 					label="Send"
 					variant="primary"
+					size="sm"
 					onClick={onSend}
 					disabled={disabled || !value.trim()}
 				/>
@@ -914,19 +1129,28 @@ function PickerPill({
 		<Select value={value ?? undefined} onValueChange={onChange}>
 			<SelectTrigger
 				style={{
+					display: "flex",
+					flexDirection: "row",
+					alignItems: "center",
 					backgroundColor: t.bgRaised,
 					borderWidth: 1,
 					borderColor: t.borderStrong,
-					borderRadius: 999,
-					paddingLeft: 10,
-					paddingRight: 10,
+					borderRadius: radius.pill,
+					paddingLeft: 11,
+					paddingRight: 11,
 					paddingTop: 4,
 					paddingBottom: 4,
+					cursor: "pointer",
+					hover: { backgroundColor: t.bgHover },
 				}}
 			>
 				<SelectValue placeholder={placeholder}>
 					<text
-						style={{ color: current ? t.textDim : t.textFaint, fontSize: 11 }}
+						style={{
+							color: current ? t.textDim : t.textFaint,
+							fontSize: font.xs,
+							whiteSpace: "nowrap",
+						}}
 					>
 						{current?.label ?? placeholder}
 					</text>
@@ -937,7 +1161,8 @@ function PickerPill({
 					backgroundColor: t.bgRaised,
 					borderWidth: 1,
 					borderColor: t.borderStrong,
-					borderRadius: 8,
+					borderRadius: radius.md,
+					boxShadow: shadow.md,
 					padding: 4,
 				}}
 			>
@@ -946,14 +1171,16 @@ function PickerPill({
 						key={o.value}
 						value={o.value}
 						style={{
-							paddingLeft: 8,
-							paddingRight: 8,
-							paddingTop: 5,
-							paddingBottom: 5,
-							borderRadius: 5,
+							paddingLeft: 9,
+							paddingRight: 9,
+							paddingTop: 6,
+							paddingBottom: 6,
+							borderRadius: radius.xs,
 						}}
 					>
-						<text style={{ color: t.text, fontSize: 12 }}>{o.label}</text>
+						<text style={{ color: t.text, fontSize: font.base }}>
+							{o.label}
+						</text>
 					</SelectItem>
 				))}
 			</SelectContent>

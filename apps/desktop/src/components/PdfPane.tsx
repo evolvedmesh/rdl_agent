@@ -11,10 +11,11 @@
  */
 import { useEffect, useState } from "react";
 import type { Api } from "../api.ts";
-import { t } from "../theme.ts";
-import { Button, Col, Row, Text } from "./ui.tsx";
+import { font, radius, shadow, t } from "../theme.ts";
+import { Col, IconButton, Row, Spacer, Text } from "./ui.tsx";
 
-const ZOOMS = [75, 100, 150, 200] as const;
+const ZOOMS = [50, 75, 100, 125, 150, 200, 300] as const;
+const DEFAULT_ZOOM_INDEX = 2;
 
 export function PdfPane({
 	api,
@@ -30,8 +31,9 @@ export function PdfPane({
 	version: number;
 	title?: string;
 }) {
-	const [zoom, setZoom] = useState<number>(100);
+	const [zoomIndex, setZoomIndex] = useState<number>(DEFAULT_ZOOM_INDEX);
 	const [page, setPage] = useState(1);
+	const [loading, setLoading] = useState(false);
 	const [raster, setRaster] = useState<{
 		path: string;
 		widthPx: number;
@@ -39,6 +41,7 @@ export function PdfPane({
 	} | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
+	const zoom = ZOOMS[zoomIndex] ?? 100;
 	const dpi = Math.round((72 * zoom) / 100);
 
 	useEffect(() => {
@@ -47,6 +50,7 @@ export function PdfPane({
 			setRaster(null);
 			return;
 		}
+		setLoading(true);
 		void api
 			.pageRaster(layoutId, page, dpi)
 			.then((r) => {
@@ -60,6 +64,9 @@ export function PdfPane({
 					setRaster(null);
 					setError(e instanceof Error ? e.message : String(e));
 				}
+			})
+			.finally(() => {
+				if (!cancelled) setLoading(false);
 			});
 		return () => {
 			cancelled = true;
@@ -71,70 +78,118 @@ export function PdfPane({
 	}, [pageCount, page]);
 
 	return (
-		<Col gap={0} grow={1} style={{ minWidth: 0, backgroundColor: t.bg }}>
+		<Col
+			gap={0}
+			grow={1}
+			style={{ minWidth: 0, minHeight: 0, backgroundColor: t.bg }}
+		>
 			<Row
 				gap={8}
 				style={{
 					paddingLeft: 12,
-					paddingRight: 12,
-					paddingTop: 8,
-					paddingBottom: 8,
+					paddingRight: 10,
+					paddingTop: 7,
+					paddingBottom: 7,
 					borderBottomWidth: 1,
 					borderColor: t.border,
 					backgroundColor: t.bgPanel,
+					flexShrink: 0,
 				}}
 			>
-				<Text color={t.textDim} size={12}>
+				<Text color={t.textDim} size={font.sm} weight={500} clamp={1}>
 					{title ?? "Preview"}
 				</Text>
-				<div style={{ flexGrow: 1 }} />
+				{loading ? (
+					<Text color={t.accent} size={font.xs}>
+						loading…
+					</Text>
+				) : null}
+				<Spacer />
+
 				{pageCount > 1 ? (
-					<Row gap={4}>
-						<Button
-							label="‹"
-							variant="ghost"
+					<Row
+						gap={2}
+						style={{
+							paddingLeft: 2,
+							paddingRight: 2,
+							borderRadius: radius.sm,
+							borderWidth: 1,
+							borderColor: t.border,
+							backgroundColor: t.bgSunken,
+						}}
+					>
+						<IconButton
+							glyph="‹"
+							title="previous page"
+							size={22}
+							disabled={page <= 1}
 							onClick={() => setPage((p) => Math.max(1, p - 1))}
 						/>
-						<Text color={t.textDim} size={12}>
+						<Text color={t.textDim} size={font.xs} mono>
 							{`${page} / ${pageCount}`}
 						</Text>
-						<Button
-							label="›"
-							variant="ghost"
+						<IconButton
+							glyph="›"
+							title="next page"
+							size={22}
+							disabled={page >= pageCount}
 							onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
 						/>
 					</Row>
 				) : null}
-				<Row gap={4}>
-					{ZOOMS.map((z) => (
-						<div
-							key={z}
-							onClick={() => setZoom(z)}
+
+				<Row
+					gap={2}
+					style={{
+						paddingLeft: 2,
+						paddingRight: 2,
+						borderRadius: radius.sm,
+						borderWidth: 1,
+						borderColor: t.border,
+						backgroundColor: t.bgSunken,
+					}}
+				>
+					<IconButton
+						glyph="−"
+						title="zoom out"
+						size={22}
+						disabled={zoomIndex === 0}
+						onClick={() => setZoomIndex((i) => Math.max(0, i - 1))}
+					/>
+					<div
+						onClick={() => setZoomIndex(DEFAULT_ZOOM_INDEX)}
+						style={{
+							display: "flex",
+							alignItems: "center",
+							justifyContent: "center",
+							width: 40,
+							cursor: "pointer",
+						}}
+					>
+						<text
 							style={{
-								display: "flex",
-								paddingLeft: 7,
-								paddingRight: 7,
-								paddingTop: 3,
-								paddingBottom: 3,
-								borderRadius: 4,
-								backgroundColor: z === zoom ? t.bgActive : "transparent",
-								cursor: "pointer",
-								hover: { backgroundColor: t.bgHover },
+								color: t.textDim,
+								fontSize: font.xs,
+								fontFamily: t.mono,
 							}}
 						>
-							<text
-								style={{
-									color: z === zoom ? t.text : t.textFaint,
-									fontSize: 11,
-								}}
-							>{`${z}%`}</text>
-						</div>
-					))}
+							{`${zoom}%`}
+						</text>
+					</div>
+					<IconButton
+						glyph="+"
+						title="zoom in"
+						size={22}
+						disabled={zoomIndex === ZOOMS.length - 1}
+						onClick={() =>
+							setZoomIndex((i) => Math.min(ZOOMS.length - 1, i + 1))
+						}
+					/>
 				</Row>
 			</Row>
 
-			{/* One scroller for this pane. Its sibling (the chat) has its own; nesting them
-          would let the inner one swallow the wheel. */}
+			{/* One scroller for this pane. Its sibling (the chat, or the layout list) has its
+          own; nesting them would let the inner one swallow the wheel. */}
 			<div
 				style={{
 					display: "flex",
@@ -146,7 +201,7 @@ export function PdfPane({
 					overflowX: "scroll",
 					flexGrow: 1,
 					minHeight: 0,
-					padding: 16,
+					padding: 18,
 				}}
 			>
 				{raster && layoutId ? (
@@ -159,18 +214,49 @@ export function PdfPane({
 						style={{
 							width: raster.widthPx,
 							height: raster.heightPx,
-							borderRadius: 2,
+							borderRadius: radius.xs,
 							borderWidth: 1,
-							borderColor: t.border,
+							borderColor: "#00000066",
 							backgroundColor: "#ffffff",
+							boxShadow: shadow.md,
 						}}
 					/>
 				) : (
-					<Col gap={6} style={{ padding: 40, alignItems: "center" }}>
-						<Text color={t.textDim}>
+					<Col
+						gap={8}
+						style={{
+							flexGrow: 1,
+							alignSelf: "stretch",
+							alignItems: "center",
+							justifyContent: "center",
+							padding: 40,
+						}}
+					>
+						<div
+							style={{
+								display: "flex",
+								alignItems: "center",
+								justifyContent: "center",
+								width: 46,
+								height: 58,
+								marginBottom: 4,
+								borderRadius: radius.xs,
+								borderWidth: 1,
+								borderColor: t.borderStrong,
+								backgroundColor: t.bgPanel,
+							}}
+						>
+							<text style={{ color: t.textFaint, fontSize: 18 }}>◫</text>
+						</div>
+						<Text color={t.textDim} size={font.md} weight={500}>
 							{error ? "Could not load the page" : "No render yet"}
 						</Text>
-						<Text color={t.textFaint} size={12}>
+						<Text
+							color={t.textFaint}
+							size={font.base}
+							align="center"
+							style={{ maxWidth: 360 }}
+						>
 							{error ?? "Render this layout to see the page here."}
 						</Text>
 					</Col>

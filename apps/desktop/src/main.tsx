@@ -6,6 +6,11 @@
  * WebSocket, render engine, ACP subprocesses, MCP server) can live in this same process
  * rather than being spawned as a sidecar. The UI still talks to it over localhost, so
  * nothing here is load-bearing for the core: a browser can drive the same server.
+ *
+ * The shell has three shapes, chosen from the window width alone (`useBreakpoint`):
+ * a docked sidebar beside a two-pane screen; a docked sidebar beside a single pane; and
+ * — narrowest — an app bar with the sidebar as an overlay. There are no media queries
+ * in GPUI, so every one of those branches is explicit.
  */
 
 import { render } from "@gpuix/react";
@@ -21,14 +26,35 @@ import {
 	type ServerMessage,
 } from "./api.ts";
 import { PdfPane } from "./components/PdfPane.tsx";
-import { Badge, Button, Col, Row, Text } from "./components/ui.tsx";
+import {
+	Badge,
+	type Breakpoint,
+	Button,
+	Col,
+	Dot,
+	IconButton,
+	PageHeader,
+	Row,
+	SectionLabel,
+	Segmented,
+	Spacer,
+	Text,
+	useBreakpoint,
+} from "./components/ui.tsx";
 import { AgentPicker } from "./screens/AgentPicker.tsx";
 import { Dialog, type DialogKind } from "./screens/dialogs.tsx";
 import { LayoutTable } from "./screens/LayoutTable.tsx";
 import { Reports } from "./screens/Reports.tsx";
 import { Session } from "./screens/Session.tsx";
 import { Settings } from "./screens/Settings.tsx";
-import { t } from "./theme.ts";
+import {
+	accentGradient,
+	font,
+	radius,
+	shadow,
+	statusColor,
+	t,
+} from "./theme.ts";
 
 // This one binary is the whole app. Before booting the GPUI window, honour the two
 // non-GUI ways it gets invoked:
@@ -80,7 +106,10 @@ const EMPTY: AppState = {
 	sessions: [],
 };
 
+const SIDEBAR_WIDTH = 244;
+
 function App() {
+	const b = useBreakpoint();
 	const [route, setRoute] = useState<Route>({ name: "reports" });
 	const [state, setState] = useState<AppState>(EMPTY);
 	const [credentials, setCredentials] = useState<CredentialStatus | null>(null);
@@ -91,6 +120,8 @@ function App() {
 	const [pageCounts, setPageCounts] = useState<Record<string, number>>({});
 	const [toast, setToast] = useState<string | null>(null);
 	const [dialog, setDialog] = useState<DialogKind | null>(null);
+	/** Only consulted while the sidebar is an overlay; a docked one is always visible. */
+	const [navOpen, setNavOpen] = useState(false);
 
 	const refresh = useCallback(async () => {
 		try {
@@ -141,6 +172,20 @@ function App() {
 			if (m.channel === "session") void refresh();
 		});
 	}, [refresh]);
+
+	// A toast that never leaves is chrome; one that leaves too fast is missed. Six
+	// seconds is long enough to read a BC error and short enough not to become furniture.
+	useEffect(() => {
+		if (!toast) return;
+		const id = setTimeout(() => setToast(null), 6000);
+		return () => clearTimeout(id);
+	}, [toast]);
+
+	// A docked sidebar cannot be "closed", so leaving the overlay state set would hide
+	// the content behind a scrim the moment the window was widened.
+	useEffect(() => {
+		if (!b.narrow) setNavOpen(false);
+	}, [b.narrow]);
 
 	const doRender = useCallback(
 		async (layoutId: string) => {
@@ -193,6 +238,11 @@ function App() {
 		[providers, refresh],
 	);
 
+	const navigate = useCallback((r: Route) => {
+		setRoute(r);
+		setNavOpen(false);
+	}, []);
+
 	const activeSession =
 		route.name === "session"
 			? state.sessions.find((s) => s.id === route.sessionId)
@@ -226,9 +276,22 @@ function App() {
 				? (state.clients.find((c) => c.id === route.clientId)?.name ?? "Client")
 				: "";
 
+	const sidebar = (
+		<Sidebar
+			route={route}
+			state={state}
+			onNavigate={navigate}
+			replaying={core.replaying}
+			port={core.server.port ?? 0}
+			floating={b.narrow}
+			onDismiss={() => setNavOpen(false)}
+		/>
+	);
+
 	return (
-		// `position: relative` so the modal overlay can be absolutely positioned over the
-		// whole app: GPUIX is single-window with no portal to escape to.
+		// `position: relative` so the modal overlay and the sidebar drawer can be
+		// absolutely positioned over the whole app: GPUIX is single-window with no portal
+		// to escape to.
 		<div
 			style={{
 				display: "flex",
@@ -238,35 +301,14 @@ function App() {
 				position: "relative",
 			}}
 		>
-			<Sidebar
-				route={route}
-				state={state}
-				onNavigate={setRoute}
-				replaying={core.replaying}
-				port={core.server.port ?? 0}
-			/>
+			{b.narrow ? null : sidebar}
 
 			<Col gap={0} grow={1} style={{ minWidth: 0, minHeight: 0 }}>
-				{toast ? (
-					<Row
-						style={{
-							paddingLeft: 16,
-							paddingRight: 16,
-							paddingTop: 8,
-							paddingBottom: 8,
-							backgroundColor: "#2a2416",
-							borderBottomWidth: 1,
-							borderColor: "#4a3f20",
-						}}
-					>
-						<text style={{ color: t.warn, fontSize: 12 }}>{toast}</text>
-						<div style={{ flexGrow: 1 }} />
-						<Button
-							label="Dismiss"
-							variant="ghost"
-							onClick={() => setToast(null)}
-						/>
-					</Row>
+				{b.narrow ? (
+					<AppBar
+						replaying={core.replaying}
+						onMenu={() => setNavOpen((v) => !v)}
+					/>
 				) : null}
 
 				{activeSession ? (
@@ -277,7 +319,7 @@ function App() {
 						pageCount={pageCounts[activeSession.layoutId] ?? 1}
 						renderVersion={renderVersion}
 						layoutTitle={layoutTitleFor(activeSession.layoutId)}
-						onClose={() => setRoute({ name: "reports" })}
+						onClose={() => navigate({ name: "reports" })}
 					/>
 				) : route.name === "agent" ? (
 					<AgentPicker
@@ -287,13 +329,13 @@ function App() {
 						onStart={(providerId) =>
 							void startSessionWithProvider(route.layoutId, providerId)
 						}
-						onBack={() => setRoute({ name: "reports" })}
+						onBack={() => navigate({ name: "reports" })}
 					/>
 				) : route.name === "reports" ? (
 					<Reports
 						reports={state.reports}
 						stats={state.stats}
-						onOpen={(reportId) => setRoute({ name: "report", reportId })}
+						onOpen={(reportId) => navigate({ name: "report", reportId })}
 						onAddReport={() => setDialog({ kind: "add-report" })}
 						onAddLayout={() => setDialog({ kind: "add-layout" })}
 					/>
@@ -328,8 +370,8 @@ function App() {
 						selectedId={selectedLayout}
 						onSelect={setSelectedLayout}
 						onRender={doRender}
-						onSession={(layoutId) => setRoute({ name: "agent", layoutId })}
-						onBack={() => setRoute({ name: "reports" })}
+						onSession={(layoutId) => navigate({ name: "agent", layoutId })}
+						onBack={() => navigate({ name: "reports" })}
 						pageCount={selected ? (pageCounts[selected.id] ?? 1) : 1}
 						renderVersion={renderVersion}
 						onDuplicate={(l) => setDialog({ kind: "duplicate", layout: l })}
@@ -344,6 +386,28 @@ function App() {
 					/>
 				)}
 			</Col>
+
+			{toast ? (
+				<Toast message={toast} onDismiss={() => setToast(null)} />
+			) : null}
+
+			{b.narrow && navOpen ? (
+				<div
+					onClick={() => setNavOpen(false)}
+					style={{
+						position: "absolute",
+						top: 0,
+						left: 0,
+						right: 0,
+						bottom: 0,
+						display: "flex",
+						flexDirection: "row",
+						backgroundColor: t.overlay,
+					}}
+				>
+					{sidebar}
+				</div>
+			) : null}
 
 			{dialog ? (
 				<Dialog
@@ -363,73 +427,222 @@ function App() {
 	);
 }
 
-function Sidebar({
-	route,
-	state,
-	onNavigate,
+/** The narrow-window title strip. The only place the drawer toggle lives. */
+function AppBar({
 	replaying,
-	port,
+	onMenu,
 }: {
-	route: Route;
-	state: AppState;
-	onNavigate: (r: Route) => void;
 	replaying: boolean;
-	port: number;
+	onMenu: () => void;
 }) {
-	const item = (
-		label: string,
-		active: boolean,
-		onClick: () => void,
-		badge?: string,
-	) => (
+	return (
+		<Row
+			gap={10}
+			style={{
+				paddingLeft: 10,
+				paddingRight: 12,
+				paddingTop: 7,
+				paddingBottom: 7,
+				borderBottomWidth: 1,
+				borderColor: t.border,
+				backgroundColor: t.bgPanel,
+				flexShrink: 0,
+			}}
+		>
+			<IconButton glyph="☰" title="menu" onClick={onMenu} size={28} />
+			<Text size={font.base} weight={600}>
+				Layout Agent
+			</Text>
+			<Spacer />
+			{replaying ? <Badge label="replay" tone="warn" dot /> : null}
+		</Row>
+	);
+}
+
+/** A dismissible notice, floating clear of the layout rather than pushing it down. */
+function Toast({
+	message,
+	onDismiss,
+}: {
+	message: string;
+	onDismiss: () => void;
+}) {
+	return (
 		<div
-			key={label}
+			style={{
+				position: "absolute",
+				left: 0,
+				right: 0,
+				bottom: 16,
+				display: "flex",
+				flexDirection: "row",
+				justifyContent: "center",
+				// The strip spans the window so the card can centre in it; only the card
+				// itself should take a click.
+				pointerEvents: "none",
+			}}
+		>
+			<Row
+				gap={12}
+				style={{
+					maxWidth: 720,
+					paddingLeft: 14,
+					paddingRight: 8,
+					paddingTop: 9,
+					paddingBottom: 9,
+					borderRadius: radius.lg,
+					borderWidth: 1,
+					borderColor: "#4a3f20",
+					backgroundColor: "#221d10",
+					boxShadow: shadow.lg,
+					pointerEvents: "auto",
+				}}
+			>
+				<text style={{ color: t.warn, fontSize: font.base, lineClamp: 4 }}>
+					{message}
+				</text>
+				<IconButton glyph="✕" title="dismiss toast" onClick={onDismiss} />
+			</Row>
+		</div>
+	);
+}
+
+function NavItem({
+	label,
+	active,
+	onClick,
+	badge,
+	dotColor,
+}: {
+	label: string;
+	active: boolean;
+	onClick: () => void;
+	badge?: string;
+	dotColor?: string;
+}) {
+	return (
+		<div
 			onClick={onClick}
 			style={{
 				display: "flex",
 				flexDirection: "row",
 				alignItems: "center",
 				gap: 8,
-				paddingLeft: 12,
-				paddingRight: 12,
+				paddingLeft: 10,
+				paddingRight: 10,
 				paddingTop: 7,
 				paddingBottom: 7,
-				borderRadius: 6,
+				borderRadius: radius.sm,
 				backgroundColor: active ? t.bgActive : "transparent",
 				cursor: "pointer",
 				hover: { backgroundColor: active ? t.bgActive : t.bgHover },
 			}}
 		>
-			<text style={{ color: active ? t.text : t.textDim, fontSize: 12.5 }}>
+			{/* The active marker is a bar rather than a colour change alone: at 11px the
+          weight difference between an active and an inactive row is easy to miss. */}
+			<div
+				style={{
+					width: 2,
+					height: 13,
+					flexShrink: 0,
+					borderRadius: radius.pill,
+					backgroundColor: active ? t.accent : "transparent",
+				}}
+			/>
+			{dotColor ? <Dot color={dotColor} /> : null}
+			<text
+				style={{
+					color: active ? t.text : t.textDim,
+					fontSize: font.base,
+					fontWeight: active ? 500 : 400,
+					lineClamp: 1,
+				}}
+			>
 				{label}
 			</text>
-			<div style={{ flexGrow: 1 }} />
+			<div style={{ flexGrow: 1, flexBasis: 0, minWidth: 0 }} />
 			{badge ? (
-				<text style={{ color: t.textFaint, fontSize: 11 }}>{badge}</text>
+				<text style={{ color: t.textFaint, fontSize: font.xs }}>{badge}</text>
 			) : null}
 		</div>
 	);
+}
 
+function Sidebar({
+	route,
+	state,
+	onNavigate,
+	replaying,
+	port,
+	floating,
+	onDismiss,
+}: {
+	route: Route;
+	state: AppState;
+	onNavigate: (r: Route) => void;
+	replaying: boolean;
+	port: number;
+	/** Drawn over the content as a drawer rather than docked beside it. */
+	floating: boolean;
+	onDismiss: () => void;
+}) {
 	return (
 		<Col
 			gap={0}
 			style={{
-				width: 232,
+				width: SIDEBAR_WIDTH,
+				flexShrink: 0,
 				backgroundColor: t.bgPanel,
 				borderRightWidth: 1,
 				borderColor: t.border,
 				minHeight: 0,
+				boxShadow: floating ? shadow.lg : undefined,
 			}}
 		>
-			<Col gap={2} style={{ padding: 14 }}>
-				<Text size={14} weight={600}>
-					Layout Agent
-				</Text>
-				<Text color={t.textFaint} size={11} mono>
-					{`localhost:${port}`}
-				</Text>
-				{replaying ? <Badge label="replay mode" color={t.warn} /> : null}
-			</Col>
+			<Row
+				gap={10}
+				style={{
+					paddingLeft: 14,
+					paddingRight: 10,
+					paddingTop: 14,
+					paddingBottom: 12,
+				}}
+			>
+				<div
+					style={{
+						display: "flex",
+						alignItems: "center",
+						justifyContent: "center",
+						width: 28,
+						height: 28,
+						flexShrink: 0,
+						borderRadius: radius.md,
+						background: accentGradient,
+						boxShadow: shadow.sm,
+					}}
+				>
+					<text style={{ color: t.textOn, fontSize: 14, fontWeight: 700 }}>
+						L
+					</text>
+				</div>
+				<Col gap={1} style={{ minWidth: 0, flexGrow: 1 }}>
+					<Text size={font.md} weight={600} clamp={1}>
+						Layout Agent
+					</Text>
+					<Text color={t.textFaint} size={font.xs} mono clamp={1}>
+						{`localhost:${port}`}
+					</Text>
+				</Col>
+				{floating ? (
+					<IconButton glyph="✕" title="close menu" onClick={onDismiss} />
+				) : null}
+			</Row>
+
+			{replaying ? (
+				<div style={{ display: "flex", paddingLeft: 14, paddingBottom: 10 }}>
+					<Badge label="replay mode" tone="warn" dot />
+				</div>
+			) : null}
 
 			<div
 				style={{
@@ -443,62 +656,93 @@ function Sidebar({
 					paddingRight: 8,
 				}}
 			>
-				{item(
-					"Reports",
-					route.name === "reports" || route.name === "report",
-					() => onNavigate({ name: "reports" }),
-					String(state.reports.length),
-				)}
+				<NavItem
+					label="Reports"
+					active={route.name === "reports" || route.name === "report"}
+					onClick={() => onNavigate({ name: "reports" })}
+					badge={String(state.reports.length)}
+				/>
 
-				<div style={{ height: 10 }} />
-				<Text
-					color={t.textFaint}
-					size={10.5}
-					style={{ paddingLeft: 12, paddingBottom: 4 }}
+				<SectionLabel
+					style={{ paddingLeft: 14, paddingTop: 14, paddingBottom: 6 }}
 				>
 					CLIENTS
-				</Text>
-				{state.clients.map((c) =>
-					item(
-						c.name,
-						route.name === "client" && route.clientId === c.id,
-						() => onNavigate({ name: "client", clientId: c.id }),
-						String(state.layouts.filter((l) => l.clientId === c.id).length),
-					),
-				)}
+				</SectionLabel>
+				{state.clients.length === 0 ? (
+					<Text
+						color={t.textFaint}
+						size={font.sm}
+						style={{ paddingLeft: 14, paddingBottom: 4 }}
+					>
+						None yet
+					</Text>
+				) : null}
+				{state.clients.map((c) => (
+					<NavItem
+						key={c.id}
+						label={c.name}
+						active={route.name === "client" && route.clientId === c.id}
+						onClick={() => onNavigate({ name: "client", clientId: c.id })}
+						badge={String(
+							state.layouts.filter((l) => l.clientId === c.id).length,
+						)}
+					/>
+				))}
 
 				{state.sessions.length > 0 ? (
 					<>
-						<div style={{ height: 10 }} />
-						<Text
-							color={t.textFaint}
-							size={10.5}
-							style={{ paddingLeft: 12, paddingBottom: 4 }}
+						<SectionLabel
+							style={{ paddingLeft: 14, paddingTop: 14, paddingBottom: 6 }}
 						>
 							SESSIONS
-						</Text>
-						{state.sessions.map((s) =>
-							item(
-								`${s.providerName} · ${s.status}`,
-								route.name === "session" && route.sessionId === s.id,
-								() => onNavigate({ name: "session", sessionId: s.id }),
-							),
-						)}
+						</SectionLabel>
+						{state.sessions.map((s) => (
+							<NavItem
+								key={s.id}
+								label={s.providerName}
+								active={route.name === "session" && route.sessionId === s.id}
+								onClick={() => onNavigate({ name: "session", sessionId: s.id })}
+								badge={s.status}
+								dotColor={sessionDot(s.status)}
+							/>
+						))}
 					</>
 				) : null}
+
+				<div style={{ height: 10 }} />
 			</div>
 
 			<Col
 				gap={2}
 				style={{ padding: 8, borderTopWidth: 1, borderColor: t.border }}
 			>
-				{item("Settings", route.name === "settings", () =>
-					onNavigate({ name: "settings" }),
-				)}
+				<NavItem
+					label="Settings"
+					active={route.name === "settings"}
+					onClick={() => onNavigate({ name: "settings" })}
+				/>
 			</Col>
 		</Col>
 	);
 }
+
+function sessionDot(status: string): string {
+	switch (status) {
+		case "thinking":
+		case "starting":
+			return t.accent;
+		case "idle":
+			return t.ok;
+		case "awaiting-permission":
+			return t.warn;
+		case "error":
+			return t.danger;
+		default:
+			return t.textFaint;
+	}
+}
+
+type DetailPane = "layouts" | "preview";
 
 function DetailScreen(props: {
 	title: string;
@@ -519,103 +763,178 @@ function DetailScreen(props: {
 	onAddLayout: () => void;
 	onBack: () => void;
 }) {
+	const b = useBreakpoint();
+	const [pane, setPane] = useState<DetailPane>("layouts");
 	const selected = props.layouts.find((l) => l.id === props.selectedId) ?? null;
 	const queued = props.queues.reduce((n, q) => n + q.depth, 0);
 
+	// Master–detail on one pane: picking a row is the gesture that means "show me this
+	// one", so it moves; the switcher is how you get back to the list.
+	const select = (id: string) => {
+		props.onSelect(id);
+		if (b.compact) setPane("preview");
+	};
+
+	const showList = !b.compact || pane === "layouts";
+	const showPreview = !b.compact || pane === "preview";
+
 	return (
 		<Col gap={0} grow={1} style={{ minHeight: 0 }}>
-			<Row
-				gap={10}
-				style={{
-					paddingLeft: 16,
-					paddingRight: 20,
-					paddingTop: 12,
-					paddingBottom: 12,
-					borderBottomWidth: 1,
-					borderColor: t.border,
-				}}
+			<PageHeader
+				title={props.title}
+				subtitle={props.subtitle}
+				compact={b.compact}
+				leading={
+					<IconButton glyph="‹" title="back" onClick={props.onBack} size={28} />
+				}
+				actions={
+					<>
+						{queued > 0 ? (
+							<Badge label={`${queued} queued`} tone="accent" dot />
+						) : null}
+						<Button
+							label="Add layout"
+							icon="+"
+							variant="primary"
+							onClick={props.onAddLayout}
+						/>
+					</>
+				}
 			>
-				<Button label="‹" variant="ghost" onClick={props.onBack} />
-				<Col gap={2} style={{ minWidth: 0 }}>
-					<Text size={16} weight={600} clamp={1}>
-						{props.title}
-					</Text>
-					<Text color={t.textFaint} size={12}>
-						{props.subtitle}
-					</Text>
-				</Col>
-				<div style={{ flexGrow: 1 }} />
-				{queued > 0 ? (
-					<Badge
-						label={`${queued} render${queued === 1 ? "" : "s"} queued`}
-						color={t.accent}
+				{b.compact ? (
+					<Segmented<DetailPane>
+						value={pane}
+						grow
+						onChange={setPane}
+						options={[
+							{
+								value: "layouts",
+								label: "Layouts",
+								badge: String(props.layouts.length),
+							},
+							{ value: "preview", label: "Preview" },
+						]}
 					/>
 				) : null}
-				<Button label="Add layout" onClick={props.onAddLayout} />
-			</Row>
+			</PageHeader>
 
 			<Row gap={0} grow={1} align="stretch" style={{ minHeight: 0 }}>
-				<Col
-					gap={0}
-					grow={1}
-					style={{ minWidth: 520, borderRightWidth: 1, borderColor: t.border }}
-				>
-					<LayoutTable
-						layouts={props.layouts}
-						mode={props.mode}
-						busyIds={props.busyIds}
-						selectedId={props.selectedId}
-						onSelect={props.onSelect}
-						onRender={props.onRender}
-						onSession={props.onSession}
-						onDuplicate={props.onDuplicate}
-						onEditParams={props.onEditParams}
-						onDelete={props.onDelete}
-					/>
-				</Col>
+				{showList ? (
+					<Col
+						gap={0}
+						grow={1}
+						style={{
+							minWidth: 0,
+							flexBasis: 0,
+							borderRightWidth: b.compact ? 0 : 1,
+							borderColor: t.border,
+						}}
+					>
+						<LayoutTable
+							layouts={props.layouts}
+							mode={props.mode}
+							compact={b.compact || !b.wide}
+							busyIds={props.busyIds}
+							selectedId={props.selectedId}
+							onSelect={select}
+							onRender={props.onRender}
+							onSession={props.onSession}
+							onDuplicate={props.onDuplicate}
+							onEditParams={props.onEditParams}
+							onDelete={props.onDelete}
+						/>
+					</Col>
+				) : null}
 
-				<Col gap={0} grow={1} style={{ minWidth: 380 }}>
-					{selected ? (
-						<>
-							<Col
-								gap={4}
-								style={{
-									padding: 12,
-									borderBottomWidth: 1,
-									borderColor: t.border,
-									backgroundColor: t.bgPanel,
-								}}
-							>
-								<Text size={12.5} weight={500} clamp={1}>
-									{`${selected.clientName} · ${selected.reportNumber}`}
-								</Text>
-								<Text color={t.textFaint} size={11} mono clamp={1}>
-									{selected.filePath}
-								</Text>
-								<Text color={t.textFaint} size={11}>
-									{selected.connection
-										? connectionLabel(selected.connection)
-										: "no connection assigned"}
-								</Text>
-							</Col>
-							<PdfPane
-								api={api}
-								layoutId={selected.id}
-								pageCount={props.pageCount}
-								version={props.renderVersion}
-								title="Preview"
-							/>
-						</>
-					) : (
-						<Col gap={6} style={{ padding: 32, alignItems: "center" }}>
-							<Text color={t.textDim}>Select a layout</Text>
-							<Text color={t.textFaint} size={12}>
-								Its last render appears here.
-							</Text>
-						</Col>
-					)}
-				</Col>
+				{showPreview ? (
+					<Col
+						gap={0}
+						grow={b.compact ? 1 : 1.15}
+						style={{ minWidth: 0, flexBasis: 0, backgroundColor: t.bg }}
+					>
+						{selected ? (
+							<>
+								<Col
+									gap={4}
+									style={{
+										paddingLeft: 14,
+										paddingRight: 14,
+										paddingTop: 10,
+										paddingBottom: 10,
+										borderBottomWidth: 1,
+										borderColor: t.border,
+										backgroundColor: t.bgPanel,
+										flexShrink: 0,
+									}}
+								>
+									<Text size={font.base} weight={600} clamp={1}>
+										{`${selected.clientName} · ${selected.reportNumber}`}
+									</Text>
+									<Text color={t.textFaint} size={font.xs} mono clamp={1}>
+										{selected.filePath}
+									</Text>
+									<Row gap={6}>
+										<Dot
+											color={statusColor(
+												selected.connection?.lastStatus ?? "never",
+											)}
+										/>
+										<Text color={t.textFaint} size={font.xs} clamp={1}>
+											{selected.connection
+												? connectionLabel(selected.connection)
+												: "no connection assigned"}
+										</Text>
+									</Row>
+								</Col>
+								<PdfPane
+									api={api}
+									layoutId={selected.id}
+									pageCount={props.pageCount}
+									version={props.renderVersion}
+									title="Preview"
+								/>
+							</>
+						) : (
+							<PreviewPlaceholder b={b} onBack={() => setPane("layouts")} />
+						)}
+					</Col>
+				) : null}
 			</Row>
+		</Col>
+	);
+}
+
+function PreviewPlaceholder({
+	b,
+	onBack,
+}: {
+	b: Breakpoint;
+	onBack: () => void;
+}) {
+	return (
+		<Col
+			gap={8}
+			style={{
+				flexGrow: 1,
+				padding: 40,
+				alignItems: "center",
+				justifyContent: "center",
+			}}
+		>
+			<Text color={t.textDim} size={font.md} weight={500}>
+				No layout selected
+			</Text>
+			<Text
+				color={t.textFaint}
+				size={font.base}
+				align="center"
+				style={{ maxWidth: 320 }}
+			>
+				Pick one from the list and its last render appears here.
+			</Text>
+			{b.compact ? (
+				<Button label="Back to layouts" variant="subtle" onClick={onBack} />
+			) : null}
 		</Col>
 	);
 }
