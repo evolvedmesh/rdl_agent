@@ -11,18 +11,19 @@ it.
 
 ## Requirements
 
-|                               |                                                                          |
-| ----------------------------- | ------------------------------------------------------------------------ |
-| **Bun**                       | 1.4+                                                                     |
-| **poppler**                   | `pdftotext`, `pdftoppm`, `pdfinfo`                                       |
-| **ImageMagick**               | `magick`                                                                 |
-| **OS keychain**               | libsecret (`secret-tool`) on Linux, Keychain on macOS                    |
-| **An ACP agent** *(optional)* | Claude Code, GitHub Copilot CLI, Gemini CLI, Codex, opencode             |
-| **Business Central**          | the Pinetworks Base Application, with the `PINLayoutPreview` web service |
+|                               |                                                                                                                 |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| **Bun**                       | 1.4+                                                                                                            |
+| **poppler**                   | `pdftotext`, `pdftoppm`, `pdfinfo`                                                                              |
+| **ImageMagick**               | `magick`                                                                                                        |
+| **OS keychain**               | libsecret (`secret-tool`) on Linux, Keychain on macOS                                                           |
+| **Linux desktop libraries**   | GTK 3, WebKitGTK 4.1, AppIndicator, librsvg — for the desktop window only; `bun run server` needs none of these |
+| **An ACP agent** *(optional)* | Claude Code, GitHub Copilot CLI, Gemini CLI, Codex, opencode                                                    |
+| **Business Central**          | the Pinetworks Base Application, with the `PINLayoutPreview` web service                                        |
 
 ```bash
 bun install
-bun run test      # 106 tests, offline — no tenant needed
+bun run test      # 117 tests, offline — no tenant needed
 bun run desktop   # the app
 ```
 
@@ -200,58 +201,32 @@ correctness.
 
 ---
 
-## Building a standalone binary
+## Building a standalone app
 
-`bun run build` compiles the whole app — core, server, GPUI UI, MCP shim — into **one
-executable** with no Bun, `node_modules`, or source tree needed to run it.
+```bash
+bun run build
+```
 
-| Script                                                                | Output                                           |
-| --------------------------------------------------------------------- | ------------------------------------------------ |
-| `bun run build`                                                       | `dist/layout-agent` for the machine you build on |
-| `bun run build:linux-x64` · `build:macos-arm64` · `build:windows-x64` | one per GPUIX target                             |
-| `bun run build:all`                                                   | all three                                        |
+This produces a normal, self-contained desktop app for the platform you build on — an
+installer you hand to someone else, or just double-click yourself. It bundles its own
+runtime, so nothing besides the requirements above needs installing separately; a release
+download for your platform includes poppler and ImageMagick too.
 
-The one binary is every entrypoint:
-
-|                                                  |                                                                                                                               |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `./layout-agent`                                 | the desktop app                                                                                                               |
-| `./layout-agent serve`                           | headless core — a browser drives it over localhost                                                                            |
-| `./layout-agent mcp-shim --stdio --session <id>` | the per-session MCP proxy; the agent spawns this by re-executing the binary, so **agent sessions work in the packaged build** |
-
-**Two things it still needs from the system:**
-
-- **poppler-utils + ImageMagick** (`pdfinfo`, `pdftotext`, `pdftoppm`, `magick`) for the
-  PDF text / raster / geometry feedback. Found on `PATH`, or in a `bin/` folder next to
-  the binary, or wherever `$LAYOUT_TOOLS_DIR` points. Both are heavily dynamically linked,
-  so embedding them is a platform-packaging job, not a build flag — ship them in the same
-  archive if you need a zero-dependency drop.
-- **An ACP agent CLI** (Claude Code, opencode, …) for agent sessions, same as running from
-  source — it reuses your existing login.
-
-GPUIX's native module ships as a separate binary per platform and Bun only embeds the one
-it can resolve at build time, so `build:macos-arm64` / `build:windows-x64` produce a
-loadable binary only when run on that OS (or a CI runner with that platform's
-`@gpuix/native-*`). From the wrong host they exit 0 but can't open a window — run
-`build:all` as a CI matrix, one leg per OS.
-
-`.github/workflows/build.yml` does exactly that: on a `v*` tag (or manual dispatch) it
-builds all three on their native runners, vendors poppler + ImageMagick with their
-libraries into each bundle's `bin/`, smoke-tests the result, and attaches the archives to
-a GitHub Release.
+Cross-platform releases are built one platform at a time and attached to each GitHub
+Release. There's no code signing, custom icon or auto-updater configured yet.
 
 ---
 
 ## Roadmap
 
-| Phase                                                                                           | State                                                 |
-| ----------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| **1 · Core engine** — store, keychain, tokens, render engine, watcher                           | ✅ done                                                |
-| **2 · Feedback + tools** — lint, text, diff, raster, locate, MCP                                | ✅ done                                                |
-| **3 · Agent integration** — one ACP client for every provider, sessions persisted and resumable | ⚠️ built; tested against a mock, never a live provider |
-| **4 · UI** — reports, detail, settings, onboarding, session                                     | ✅ done                                                |
-| **5 · Desktop shell** — GPUIX                                                                   | ✅ renders on Linux/Wayland/NVIDIA                     |
-| **6 · Word layouts**                                                                            | ⚠️ renders; the docx *editing* tools are not built     |
+| Phase                                                                                           | State                                                                            |
+| ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| **1 · Core engine** — store, keychain, tokens, render engine, watcher                           | ✅ done                                                                           |
+| **2 · Feedback + tools** — lint, text, diff, raster, locate, MCP                                | ✅ done                                                                           |
+| **3 · Agent integration** — one ACP client for every provider, sessions persisted and resumable | ⚠️ built; Claude Code proven live, GitHub Copilot CLI does not work as a provider |
+| **4 · UI** — reports, detail, settings, onboarding, session                                     | ✅ done                                                                           |
+| **5 · Desktop shell** — Electrobun (React + Tailwind, system webview)                           | ✅ renders on Linux/Wayland; driven end to end with a live agent                  |
+| **6 · Word layouts**                                                                            | ⚠️ renders; the docx *editing* tools are not built                                |
 
 ### Next, in order
 
@@ -260,8 +235,7 @@ a GitHub Release.
    written up in [spikes/tasks/S2-tasks.md](spikes/tasks/S2-tasks.md) — widen a column,
    fix a wrap, bold the totals, move a field, add a logo. Half a day, and it can still
    invalidate the product.
-2. **One live agent session.** The ACP client is proven against a mock agent only.
-3. **Ship the AL.** `app/src/ReportLayoutPreview/` and `app/ws.xml` are built and
+2. **Ship the AL.** `app/src/ReportLayoutPreview/` and `app/ws.xml` are built and
    analyzer-clean but uncommitted in the Base Application repo. Nothing renders on a
    tenant without them.
 
@@ -270,20 +244,18 @@ a GitHub Release.
 - **The file chooser is the desktop's, not the app's.** Browse hands off to Finder,
   the Windows common dialog, or a portal-backed helper (zenity / kdialog) on Linux. On a
   box with none of those installed, the path is still typed.
-- **Session resume is mock-tested only.** Chats persist and rebuild across a restart, and
-  `Resume` calls ACP `session/load` — but the only agent it has run against is the test
-  fixture, same caveat as the rest of Phase 3.
-- **Text fields miss some OS editing keys.** GPUIX's native input binds word operations to
-  the macOS `cmd-*` chords; Ctrl/Alt+Backspace is polyfilled in the app, but only for a
-  caret at the end of the field. Word navigation and select-all need the fix upstream.
+- **Not every agent works.** Claude Code has been run live, end to end. GitHub Copilot
+  CLI connects but never actually starts the layout tools, so a session with it cannot
+  render or read a page — the picker warns you before you start one.
+- **Session resume is lightly tested.** Chats persist and rebuild across a restart, and
+  `Resume` calls ACP `session/load`, but multi-turn conversations and resume itself are
+  still mostly covered by an automated stand-in rather than a real agent.
 - **Multi-page geometry diffing compares pages by index**, so an inserted page reports the
   whole document as changed. The diff says so rather than hiding it.
 - **Render history has no UI**, though it is stored and served.
-- **Packaging stops at the binary.** `bun run build` produces one self-contained
-  executable (see *Building*), but there's no installer, icon, code-signing or updater,
-  and poppler / ImageMagick are still expected on the system rather than bundled.
-- **One window.** GPUIX is single-window, so the preview cannot be detached to a second
-  monitor.
+- **No code signing, custom icon or auto-updater configured yet** for the packaged app.
+- **One window.** The preview cannot be detached to a second monitor — nothing stops it,
+  it just isn't wired up.
 
 ### Open question
 

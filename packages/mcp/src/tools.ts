@@ -46,6 +46,11 @@ export type ToolContext = {
 	}) => void;
 	/** Suppress the file watcher while the agent works, so it does not double-render. */
 	suppressWatch?: (layoutId: string) => () => void;
+	/**
+	 * Handed a live accessor for the loop counters. This is the S2 scoring sheet as data:
+	 * renders spent, images spent, and how many round trips changed nothing.
+	 */
+	onStats?: (read: () => LoopStats) => void;
 };
 
 const DEFAULT_LIMITS: LoopLimits = {
@@ -61,11 +66,47 @@ function estimateTokens(r: ToolResult, imageTokens: number): number {
 	return n;
 }
 
+/** Whether `diffGeometry` reported no movement at all. */
+function isNoOp(diff: string): boolean {
+	return /^\s*(nothing|no )/i.test(diff);
+}
+
+/**
+ * Which page to return text for. Page 1 unless the render is long, in which case the
+ * full transcript is mostly noise and the agent can ask for a specific page.
+ */
+function pageOfInterest(pageCount: number): number | undefined {
+	return pageCount > 3 ? 1 : undefined;
+}
+
+/** What the session has spent so far, and what a session counted at the end. */
+export type LoopStats = {
+	iterations: number;
+	imagesThisIteration: number;
+	/** Renders whose file changed but whose geometry did not — a wasted round trip. */
+	noOpRenders: number;
+	failedRenders: number;
+};
+
 export function createLayoutTools(ctx: ToolContext): Tool[] {
 	const limits: LoopLimits = { ...DEFAULT_LIMITS, ...ctx.limits };
 	let iteration = 0;
 	let imagesThisIteration = 0;
 	let pendingImageTokens = 0;
+	let noOpRenders = 0;
+	let failedRenders = 0;
+
+	/** Appended to every result so the budget is never a surprise at iteration 10. */
+	const budgetLine = () =>
+		`\n---\nBudget: ${limits.maxIterations - iteration} render(s) and ` +
+		`${limits.maxImagesPerIteration - imagesThisIteration} image(s) left this iteration.`;
+
+	ctx.onStats?.(() => ({
+		iterations: iteration,
+		imagesThisIteration,
+		noOpRenders,
+		failedRenders,
+	}));
 
 	const layout = () => {
 		const d = ctx.store.layoutDetails({ layoutId: ctx.layoutId })[0];
@@ -160,6 +201,7 @@ export function createLayoutTools(ctx: ToolContext): Tool[] {
 			}
 
 			if (!result.ok) {
+				failedRenders += 1;
 				return failure(
 					[
 						`Render FAILED after ${result.durationMs}ms (iteration ${iteration}/${limits.maxIterations}).`,
@@ -167,6 +209,7 @@ export function createLayoutTools(ctx: ToolContext): Tool[] {
 						result.lint.length
 							? `\nPre-render lint:\n${formatFindings(result.lint)}`
 							: "",
+						budgetLine(),
 					]
 						.filter(Boolean)
 						.join("\n"),
@@ -174,19 +217,46 @@ export function createLayoutTools(ctx: ToolContext): Tool[] {
 			}
 
 			const after = await ctx.engine.geometryOf(ctx.layoutId, "current");
+			const geometry =
+				before && after
+					? diffGeometry(before, after)
+					: "First render of this session — nothing to compare against yet.";
+
+			// The one check worth making mechanically. We cannot compare English to a
+			// geometry diff, but "you expected a change and nothing moved" is decidable,
+			// and it is the failure the agent is least likely to notice on its own: the
+			// edit went somewhere the renderer never read.
+			const movedNothing = Boolean(before && after) && isNoOp(geometry);
+			if (movedNothing) noOpRenders += 1;
+
 			const parts = [
 				`Render OK — ${result.pageCount} page(s), ${result.durationMs}ms` +
 					`${result.cached ? " (cached: layout bytes unchanged, no BC round trip)" : ""}. ` +
 					`Iteration ${iteration}/${limits.maxIterations}.`,
 				`\nYou expected: ${expectation}`,
-				`\n## Lint\n${formatFindings(result.lint)}`,
 			];
+
+			if (result.cached) {
+				parts.push(
+					"\n**The layout file has not changed since the last render.** This is the " +
+						"previous result, not a new one. If you meant to test an edit, the edit did " +
+						"not reach the file this session renders — check the path with layout_params.",
+				);
+			} else if (movedNothing) {
+				parts.push(
+					"\n**Nothing moved.** The file changed but the rendered geometry is identical, " +
+						"so whatever you edited is not what produced the output you are trying to " +
+						"change. Use layout_locate on the text you expected to move before editing " +
+						"again — do not repeat the same edit.",
+				);
+			}
+
+			parts.push(`\n## Lint\n${formatFindings(result.lint)}`);
+			parts.push(`\n## Geometry change since the previous render\n${geometry}`);
 			parts.push(
-				before && after
-					? `\n## Geometry change since the previous render\n${diffGeometry(before, after)}`
-					: "\n## Geometry change\nFirst render of this session — nothing to compare against yet.",
+				`\n## Layout text\n${await layoutText(result.pdfPath, pageOfInterest(result.pageCount))}`,
 			);
-			parts.push(`\n## Layout text\n${await layoutText(result.pdfPath)}`);
+			parts.push(budgetLine());
 			return text(parts.join("\n"));
 		}),
 	};

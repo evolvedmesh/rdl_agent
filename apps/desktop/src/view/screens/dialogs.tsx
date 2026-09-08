@@ -14,9 +14,15 @@ import type {
 } from "@layout/core";
 import { useState } from "react";
 import type { Api, ReportCard } from "../api.ts";
-import { Dropdown, Modal, TextArea, useSubmit } from "../components/forms.tsx";
-import { Button, Col, Field, Row, Text } from "../components/ui.tsx";
-import { t } from "../theme.ts";
+import { Dropdown, Modal, useSubmit } from "../components/forms.tsx";
+import {
+	Button,
+	cx,
+	Field,
+	Input,
+	Spinner,
+	TextArea,
+} from "../components/ui.tsx";
 
 export type DialogKind =
 	| { kind: "add-client" }
@@ -107,6 +113,10 @@ export function Dialog({
 	}
 }
 
+const Hint = ({ children }: { children: React.ReactNode }) => (
+	<p className="text-xs leading-relaxed text-faint">{children}</p>
+);
+
 function AddClient({
 	api,
 	onDone,
@@ -131,19 +141,21 @@ function AddClient({
 				void run(async () => {
 					await api.createClient(name.trim());
 					onDone();
-				}).catch(() => {});
+				});
 			}}
 		>
-			<Field
-				label="Client name"
-				value={name}
-				onChange={setName}
-				placeholder="Hawks Middle East"
-			/>
-			<Text color={t.textFaint} size={11.5}>
+			<Field label="Client name">
+				<Input
+					autoFocus
+					value={name}
+					onChange={(e) => setName(e.target.value)}
+					placeholder="Hawks Middle East"
+				/>
+			</Field>
+			<Hint>
 				Add at least one connection next — a tenant, environment and company
 				this client's reports render against.
-			</Text>
+			</Hint>
 		</Modal>
 	);
 }
@@ -189,37 +201,43 @@ function AddConnection({
 						isDefault: existing === 0,
 					});
 					onDone();
-				}).catch(() => {});
+				});
 			}}
 		>
-			<Field
-				label="Tenant ID"
-				value={tenantId}
-				onChange={setTenantId}
-				placeholder="2c85ac3e-8f39-4971-beba-38bf7fefc87f"
-			/>
-			<Field
-				label="Environment"
-				value={environment}
-				onChange={setEnvironment}
-				placeholder="Production, Dev3, SANDBOX…"
-			/>
-			<Field
-				label="Company"
-				value={company}
-				onChange={setCompany}
-				placeholder="HAWKS MIDDLE EAST"
-			/>
-			<Text color={t.textFaint} size={11.5}>
+			<Field label="Tenant ID">
+				<Input
+					autoFocus
+					value={tenantId}
+					onChange={(e) => setTenantId(e.target.value)}
+					placeholder="2c85ac3e-8f39-4971-beba-38bf7fefc87f"
+					spellCheck={false}
+				/>
+			</Field>
+			<Field label="Environment">
+				<Input
+					value={environment}
+					onChange={(e) => setEnvironment(e.target.value)}
+					placeholder="Production, Dev3, SANDBOX…"
+				/>
+			</Field>
+			<Field label="Company">
+				<Input
+					value={company}
+					onChange={(e) => setCompany(e.target.value)}
+					placeholder="HAWKS MIDDLE EAST"
+				/>
+			</Field>
+			<Hint>
 				The company name goes into the OData URL as a string literal, so it must
 				match Business Central exactly — case, spacing and punctuation included.
-			</Text>
-			<Field
-				label="Label (optional)"
-				value={label}
-				onChange={setLabel}
-				placeholder="defaults to the environment name"
-			/>
+			</Hint>
+			<Field label="Label (optional)">
+				<Input
+					value={label}
+					onChange={(e) => setLabel(e.target.value)}
+					placeholder="defaults to the environment name"
+				/>
+			</Field>
 		</Modal>
 	);
 }
@@ -248,6 +266,7 @@ function AddReport({
 			subtitle="A Business Central report definition, identified by its object ID."
 			onClose={onClose}
 			submitting={busy}
+			submitDisabled={!valid}
 			error={error}
 			onSubmit={() => {
 				if (!valid) return;
@@ -258,32 +277,37 @@ function AddReport({
 						source.trim() || undefined,
 					);
 					onDone();
-				}).catch(() => {});
+				});
 			}}
 		>
-			<Field
-				label="Report ID"
-				value={reportId}
-				onChange={setReportId}
-				placeholder="61206"
-			/>
-			<Field
-				label="Name"
-				value={name}
-				onChange={setName}
-				placeholder="Calc. and Post VAT Settlement"
-			/>
-			<Field
-				label="Source (optional)"
-				value={source}
-				onChange={setSource}
-				placeholder="base, or the extension name"
-			/>
-			<Text color={t.textFaint} size={11.5}>
+			<Field label="Report ID">
+				<Input
+					autoFocus
+					inputMode="numeric"
+					value={reportId}
+					onChange={(e) => setReportId(e.target.value)}
+					placeholder="61206"
+				/>
+			</Field>
+			<Field label="Name">
+				<Input
+					value={name}
+					onChange={(e) => setName(e.target.value)}
+					placeholder="Calc. and Post VAT Settlement"
+				/>
+			</Field>
+			<Field label="Source (optional)">
+				<Input
+					value={source}
+					onChange={(e) => setSource(e.target.value)}
+					placeholder="base, or the extension name"
+				/>
+			</Field>
+			<Hint>
 				Two clients' report 61206 are only the same report if both have the same
 				extension installed. Reports are grouped by ID, but their datasets can
 				differ.
-			</Text>
+			</Hint>
 		</Modal>
 	);
 }
@@ -347,12 +371,12 @@ function AddLayout({
 						paramsXml: paramsXml.trim() || null,
 					});
 					onDone();
-				}).catch(() => {});
+				});
 			}}
 		>
 			<Dropdown
 				label="Report"
-				value={reportId}
+				value={reportId ?? undefined}
 				onChange={setPickedReport}
 				options={reports.map((r) => ({
 					value: r.id,
@@ -364,7 +388,7 @@ function AddLayout({
 			/>
 			<Dropdown
 				label="Client"
-				value={clientId}
+				value={clientId ?? undefined}
 				onChange={(v) => {
 					setPickedClient(v);
 					setConnectionId(null);
@@ -376,7 +400,7 @@ function AddLayout({
 			/>
 			<Dropdown
 				label="Connection"
-				value={effectiveConnection}
+				value={effectiveConnection ?? undefined}
 				onChange={setConnectionId}
 				options={forClient.map((c) => ({
 					value: c.id,
@@ -425,17 +449,16 @@ function EditParams({
 			onClose={onClose}
 			submitting={busy}
 			error={error}
-			submitLabel="Save"
 			onSubmit={() =>
 				void run(async () => {
 					await api.updateLayout(layout.id, { paramsXml, connectionId });
 					onDone();
-				}).catch(() => {})
+				})
 			}
 		>
 			<Dropdown
 				label="Connection"
-				value={connectionId}
+				value={connectionId ?? undefined}
 				onChange={setConnectionId}
 				options={forClient.map((c) => ({
 					value: c.id,
@@ -499,35 +522,32 @@ function Duplicate({
 						targetPath: targetPath.trim(),
 					});
 					onDone();
-				}).catch(() => {});
+				});
 			}}
 		>
-			<Row gap={8}>
-				<Text color={t.textDim} size={12}>
-					Copying
-				</Text>
-				<Text size={12} mono>
-					{layout.filePath}
-				</Text>
-			</Row>
+			<p className="flex flex-wrap items-baseline gap-2 text-sm text-dim">
+				Copying <span className="font-mono text-fg">{layout.filePath}</span>
+			</p>
 			<Dropdown
 				label="To client"
-				value={clientId}
+				value={clientId ?? undefined}
 				onChange={setPickedClient}
 				options={others.map((c) => ({ value: c.id, label: c.name }))}
 				placeholder="Add another client first"
 			/>
-			<Field
-				label="New file path"
-				value={targetPath}
-				onChange={setTargetPath}
-				placeholder="/home/you/reports/acme/61206/Default.rdl"
-			/>
-			<Text color={t.textFaint} size={11.5}>
+			<Field label="New file path">
+				<Input
+					value={targetPath}
+					onChange={(e) => setTargetPath(e.target.value)}
+					placeholder="/home/you/reports/acme/61206/Default.rdl"
+					spellCheck={false}
+				/>
+			</Field>
+			<Hint>
 				The file is copied, and the preview parameters come with it. Those
 				parameters name records in {layout.clientName}'s company, so expect to
 				edit them for the new tenant.
-			</Text>
+			</Hint>
 		</Modal>
 	);
 }
@@ -560,30 +580,30 @@ function DeleteLayout({
 			onClose={onClose}
 			submitting={busy}
 			error={error}
-			submitLabel={busy ? "Removing…" : "Remove"}
+			submitLabel="Remove"
 			onSubmit={() =>
 				void run(async () => {
 					await api.deleteLayout(layout.id);
 					onDone();
-				}).catch(() => {})
+				})
 			}
 		>
-			<Text size={12.5}>
+			<p className="text-sm">
 				This unbinds the layout from {layout.clientName} and drops its render
 				history. Any agent session running on it is stopped.
-			</Text>
-			<Col gap={3}>
-				<Text color={t.textDim} size={11.5}>
+			</p>
+			<div className="flex flex-col gap-1">
+				<span className="text-xs text-dim">
 					The file itself is not deleted:
-				</Text>
-				<Text size={11.5} mono>
+				</span>
+				<span className="rounded-sm bg-sunken px-2 py-1 font-mono text-xs break-all">
 					{layout.filePath}
-				</Text>
-			</Col>
-			<Text color={t.textFaint} size={11.5}>
+				</span>
+			</div>
+			<Hint>
 				You can bind it again with Add layout, though its preview parameters
 				will have to be set once more.
-			</Text>
+			</Hint>
 		</Modal>
 	);
 }
@@ -630,33 +650,36 @@ function LayoutFileField({
 	};
 
 	return (
-		<Col gap={5}>
-			<Row gap={8} align="flex-end">
-				<div style={{ display: "flex", flexDirection: "column", flexGrow: 1 }}>
-					<Field
-						label="Layout file"
-						value={value}
-						onChange={onChange}
-						placeholder="/home/you/reports/hawks/61206/Default.rdl"
-					/>
+		<div className="flex flex-col gap-1.5">
+			<div className="flex items-end gap-2">
+				<div className="min-w-0 flex-1">
+					<Field label="Layout file">
+						<Input
+							value={value}
+							onChange={(e) => onChange(e.target.value)}
+							placeholder="/home/you/reports/hawks/61206/Default.rdl"
+							spellCheck={false}
+						/>
+					</Field>
 				</div>
-				<Button
-					label={browsing ? "Choosing…" : "Browse…"}
-					onClick={() => void browse()}
-					disabled={browsing}
-				/>
-			</Row>
-			{note ? (
-				<Text color={t.danger} size={11}>
-					{note}
-				</Text>
-			) : null}
-			<Text color={t.textFaint} size={11.5}>
+				<Button onClick={() => void browse()} disabled={browsing}>
+					{browsing ? (
+						<>
+							<Spinner /> Choosing…
+						</>
+					) : (
+						"Browse…"
+					)}
+				</Button>
+			</div>
+			{note ? <p className="text-xs text-danger">{note}</p> : null}
+			<Hint>
 				An absolute path to a file you own. The agent edits it in place, so
 				point this at a working copy — not at a pristine original you want to
-				keep. `.docx` is detected automatically.
-			</Text>
-		</Col>
+				keep.
+				<code className="ml-1 font-mono">.docx</code> is detected automatically.
+			</Hint>
+		</div>
 	);
 }
 
@@ -772,57 +795,52 @@ function ParamsField({
 	// The fetch sits above the editor, not below it: the box is tall enough to push a
 	// control under it past the modal's fold, and this is the way the field gets filled.
 	return (
-		<Col gap={5}>
-			<Row gap={8}>
-				<Button
-					label={busy ? "Fetching…" : "Fetch from BC"}
-					onClick={() => void load()}
-					disabled={busy || !canFetch}
-				/>
-				<Text color={t.textFaint} size={11}>
+		<div className="flex flex-col gap-1.5">
+			<div className="flex flex-wrap items-center gap-2">
+				<Button onClick={() => void load()} disabled={busy || !canFetch}>
+					{busy ? (
+						<>
+							<Spinner /> Fetching…
+						</>
+					) : (
+						"Fetch from BC"
+					)}
+				</Button>
+				<span className="min-w-0 flex-1 text-xs text-faint">
 					{canFetch
 						? `Reads the saved request-page settings for report ${reportNumber}.`
 						: "Pick a report and a connection to fetch from Business Central."}
-				</Text>
-			</Row>
+				</span>
+			</div>
+
 			{choices.length > 0 ? (
 				<Dropdown
 					label="Saved settings"
-					value={chosen}
-					onChange={(name) => void load(name)}
-					options={choices.map((c) => ({
-						value: c.name,
-						label: `${c.name} · ${c.user || "no owner"}${c.temporary ? " · single run" : ""}`,
+					value={chosen ?? undefined}
+					onChange={(v) => void load(v)}
+					options={choices.map((s) => ({
+						value: s.name,
+						label: s.user ? `${s.name} — ${s.user}` : s.name,
 					}))}
-					placeholder="Select settings to load…"
+					placeholder="Pick one to load…"
 				/>
 			) : null}
+
 			{note ? (
-				<Text color={note.bad ? t.danger : t.accent} size={11}>
+				<p className={cx("text-xs", note.bad ? "text-danger" : "text-ok")}>
 					{note.text}
-				</Text>
+				</p>
 			) : null}
-			<TextArea
-				label="Preview parameters (reportParamsXml)"
-				value={value}
-				onChange={onChange}
-				rows={rows}
-				placeholder={
-					'<?xml version="1.0" standalone="yes"?><ReportParameters name="…" id="61206">…'
-				}
-			/>
-			<Col gap={3}>
-				<Text color={t.textFaint} size={11}>
-					Business Central will not render without this. Fetch it, or capture it
-					in BC with "Report Parameters for Layout Preview" and paste it here.
-					It names real records, so it is per client, not per report.
-				</Text>
-				<Text color={t.textFaint} size={11}>
-					{value.trim()
-						? `${value.trim().length} characters`
-						: "Empty — the render will fail or come back blank."}
-				</Text>
-			</Col>
-		</Col>
+
+			<Field label="Preview parameters (reportParamsXml)">
+				<TextArea
+					rows={rows}
+					value={value}
+					onChange={(e) => onChange(e.target.value)}
+					placeholder="<?xml version=… fetched from Business Central"
+					spellCheck={false}
+				/>
+			</Field>
+		</div>
 	);
 }

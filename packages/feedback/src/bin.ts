@@ -2,15 +2,16 @@
  * Where to find the external CLIs the PDF ladder shells out to
  * (`pdfinfo`, `pdftotext`, `pdftoppm`, `magick`).
  *
- * In dev they come off `PATH`, same as always. A packaged single-file build has no
- * `node_modules` but still needs them, so resolution also looks, in order:
+ * In dev they come off `PATH`, same as always. A packaged build has no `node_modules`
+ * but still needs them, so resolution also looks, in order:
  *
- *   1. $LAYOUT_TOOLS_DIR                       explicit override
- *   2. <dir of the app binary>/ and /bin/     "drop the four binaries next to the app"
- *   3. PATH                                    the bare name, resolved by the OS
+ *   1. $LAYOUT_TOOLS_DIR                    explicit override
+ *   2. <dir of the running binary>/         and its `tools/` and `../tools/`
+ *   3. PATH                                 the bare name, resolved by the OS
  *
- * The goal is that one binary plus (optionally) a `bin/` folder beside it is a fully
- * portable bundle, without giving up the normal "it's just on PATH" case.
+ * `tools/`, not `bin/`: inside an Electrobun bundle the running binary lives in
+ * `<app>/bin/` alongside Electrobun's own `launcher`, `bspatch` and `zig-zstd`, so
+ * dropping poppler in there would mix our payload into theirs.
  */
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -23,10 +24,14 @@ function candidates(name: string): string[] {
 	const out: string[] = [];
 	const envDir = process.env.LAYOUT_TOOLS_DIR;
 	if (envDir) out.push(join(envDir, file));
-	// process.execPath is the app binary in a compiled build, or `bun` in dev — either
-	// way, a `bin/` sitting next to it is a deliberate bundle, worth checking.
+	// process.execPath is the app binary in a compiled build, the bundled `bun` under
+	// Electrobun, or `bun` in dev — either way a sibling `tools/` is a deliberate bundle.
 	const selfDir = dirname(process.execPath);
-	out.push(join(selfDir, file), join(selfDir, "bin", file));
+	out.push(
+		join(selfDir, file),
+		join(selfDir, "tools", file),
+		join(selfDir, "..", "tools", file),
+	);
 	return out;
 }
 
@@ -46,7 +51,7 @@ export function resolveTool(name: string): string {
 export function missingToolMessage(name: string): string {
 	return (
 		`"${name}" was not found. Install poppler-utils and ImageMagick, or put ` +
-		`pdfinfo/pdftotext/pdftoppm/magick in a "bin" folder next to the app ` +
+		`pdfinfo/pdftotext/pdftoppm/magick in a "tools" folder next to the app ` +
 		`(or point $LAYOUT_TOOLS_DIR at them).`
 	);
 }

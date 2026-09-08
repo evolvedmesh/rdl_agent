@@ -46,6 +46,14 @@ async function handlePrompt(msg: {
 		sessionUpdate: "plan",
 		entries: [{ content: "Widen the column", status: "in_progress" }],
 	});
+	// Reasoning streams a token at a time, exactly as a real agent does. Coalescing this
+	// is the point: unbuffered, one paragraph became sixty timeline rows of one word.
+	for (const t of ["I should ", "widen ", "the column."]) {
+		update({
+			sessionUpdate: "agent_thought_chunk",
+			content: { type: "text", text: t },
+		});
+	}
 	update({
 		sessionUpdate: "agent_message_chunk",
 		content: { type: "text", text: "Looking" },
@@ -116,6 +124,54 @@ async function handlePrompt(msg: {
 					title: "Write Default.rdl",
 					kind: "edit",
 					rawInput: { path: "Default.rdl" },
+				},
+				options: [
+					{ optionId: "yes", name: "Allow once", kind: "allow_once" },
+					{ optionId: "no", name: "Reject", kind: "reject_once" },
+				],
+			},
+			permissionAnswers,
+		);
+		note(`PERMISSION=${answer}`);
+	}
+
+	// Copilot CLI's shape: a human-readable title with the real tool name only in
+	// rawInput.command. Matching on the title alone, our own free tools all stopped
+	// and asked — which made the auto-allow policy silently do nothing there.
+	if (promptText.includes("disguised")) {
+		const answer = await ask(
+			"session/request_permission",
+			{
+				sessionId,
+				toolCall: {
+					toolCallId: "tc-3",
+					title: "Lint report layout",
+					kind: "execute",
+					rawInput: { command: "layout_lint /tmp/Default.rdl" },
+				},
+				options: [
+					{ optionId: "yes", name: "Allow once", kind: "allow_once" },
+					{ optionId: "always", name: "Always", kind: "allow_always" },
+					{ optionId: "no", name: "Reject", kind: "reject_once" },
+				],
+			},
+			permissionAnswers,
+		);
+		note(`PERMISSION=${answer}`);
+	}
+
+	// Claude Code's shape: the MCP-prefixed tool name as the title, empty rawInput.
+	// The leading "_" of the prefix is a word character, so a \b-anchored match fails.
+	if (promptText.includes("prefixed")) {
+		const answer = await ask(
+			"session/request_permission",
+			{
+				sessionId,
+				toolCall: {
+					toolCallId: "tc-4",
+					title: "mcp__layout__layout_lint",
+					kind: "other",
+					rawInput: {},
 				},
 				options: [
 					{ optionId: "yes", name: "Allow once", kind: "allow_once" },

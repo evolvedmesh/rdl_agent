@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 **Read [AGENTS.md](./AGENTS.md) first.** It holds the project state, the package
-boundaries, the GPUIX rules, the testing conventions and the hard rules about Business
+boundaries, the webview rules, the testing conventions and the hard rules about Business
 Central and secrets. This file is only what is specific to working here with Claude Code,
 and it deliberately does not repeat AGENTS.md — two copies of the same guidance drift, and
 the stale one gets followed.
@@ -50,16 +50,26 @@ lost. Treat returned source as already read — do not re-open those files.
 
 ## Verifying UI work
 
-`grim` against the compositor is the only way to see this UI (GPUIX has no working
-screenshot API on Linux — AGENTS.md explains). The full recipe is there; the point worth
-repeating is: **actually look at the image**. Wrapped labels, a page clipped at its left
-edge, and a badge stretched across a panel were all invisible in the code and immediately
-obvious in a screenshot.
+The UI is a webview, so **drive it in a real browser** — that is the fastest loop and it
+is how the screens in this repo were actually checked:
 
-When a change needs a screen you cannot reach by clicking — a dialog, a specific route —
-temporarily patch the initial state in `apps/desktop/src/main.tsx`, capture, then restore
-it. Keep a backup copy of the file and restore it in the same turn, or you will leave test
-scaffolding behind.
+```bash
+LAYOUT_DATA_DIR=/tmp/scratch RDLA_FAKE_BC=$PWD/test/fixtures/preview.pdf \
+  LAYOUT_PORT=7788 LAYOUT_NO_AUTH=1 bun apps/desktop/src/main.ts serve
+```
+
+Then open `http://127.0.0.1:7788/` and click through it, or drive it with Playwright.
+Measuring the DOM beats guessing: a client name truncated to `A…` was diagnosed in one
+call by reading `getBoundingClientRect()` across the row, which showed a stray `flex-1`
+spacer splitting the space with the column it was starving.
+
+For the real window use `grim` against the compositor (AGENTS.md has the recipe). The
+point worth repeating is: **actually look at the image**. Wrapped labels, a page clipped
+at its left edge, and rows folding into a jumble were all invisible in the code.
+
+**A blank window is almost never your code.** WebKitGTK's accelerated compositing fails
+under XWayland on this machine and paints nothing at all, silently. `bun run desktop`
+sets `WEBKIT_DISABLE_COMPOSITING_MODE=1`; a bare `hutch electrobun dev` does not.
 
 ---
 

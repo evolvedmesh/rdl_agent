@@ -41,6 +41,12 @@ export const PROVIDERS: Provider[] = [
 		command: "copilot",
 		args: ["--acp"],
 		native: true,
+		// Observed live against CLI 1.0.83: it accepts `mcpServers` on session/new and
+		// then never starts them — no shim process is spawned. Asked for `layout_params`
+		// it ran `layout_params` as a shell command and reported "command not found".
+		// The session connects and streams fine, so this is not detectable at connect
+		// time; it has to be said up front.
+		note: "Connects, but ignores the layout tools — it never starts the MCP server, so the agent cannot render or inspect the layout. Prefer Claude Code until this changes.",
 	},
 	{
 		id: "gemini",

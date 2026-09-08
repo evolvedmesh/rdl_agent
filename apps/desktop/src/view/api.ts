@@ -1,7 +1,11 @@
 /**
  * Client for the core process. The UI holds no domain logic of its own — it renders
  * what the server says and posts commands back, which is what lets the same core run
- * behind a browser, this shell, or a different one later.
+ * behind a browser, this webview, or a different shell later.
+ *
+ * Origin and token both come from the document's own URL: the main process opens the
+ * window at `http://127.0.0.1:<port>/?t=<token>`, so the window starts out holding a
+ * credential no other local process was given.
  */
 
 import type { DetectedProvider } from "@layout/acp";
@@ -47,18 +51,61 @@ export type CredentialStatus = {
 	store: string;
 };
 
+export type RenderEvent =
+	| { type: "queued"; layoutId: string; connectionId: string; depth: number }
+	| { type: "started"; layoutId: string; connectionId: string }
+	| {
+			type: "finished";
+			layoutId: string;
+			connectionId: string;
+			result: {
+				ok: boolean;
+				layoutId: string;
+				pageCount?: number;
+				durationMs: number;
+				cached?: boolean;
+				error?: { kind: string; message: string };
+			};
+	  };
+
 export type ServerMessage =
 	| { channel: "hello"; queues: QueueSnapshot[] }
-	| { channel: "render"; event: unknown; queues: QueueSnapshot[] }
+	| { channel: "render"; event: RenderEvent; queues: QueueSnapshot[] }
 	| { channel: "session"; sessionId: string; event: SessionEvent };
 
+/**
+ * The launch token, taken off the URL once and kept for the life of the window.
+ *
+ * It is removed from the address bar so it is not left on display, and mirrored into
+ * sessionStorage so a reload does not lock the window out of its own server.
+ * sessionStorage is the right scope: same tab only, gone when the window closes.
+ */
+const TOKEN_KEY = "layout-agent.token";
+
+function readToken(): string {
+	const url = new URL(window.location.href);
+	const fromUrl = url.searchParams.get("t");
+	if (fromUrl) {
+		sessionStorage.setItem(TOKEN_KEY, fromUrl);
+		url.searchParams.delete("t");
+		window.history.replaceState({}, "", url.toString());
+		return fromUrl;
+	}
+	return sessionStorage.getItem(TOKEN_KEY) ?? "";
+}
+
 export class Api {
-	constructor(readonly base: string) {}
+	readonly base = window.location.origin;
+	readonly token = readToken();
 
 	async #json<T>(path: string, init?: RequestInit): Promise<T> {
 		const res = await fetch(`${this.base}${path}`, {
 			...init,
-			headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+			headers: {
+				"Content-Type": "application/json",
+				...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+				...(init?.headers ?? {}),
+			},
 		});
 		if (!res.ok) {
 			const body = await res.text();
@@ -67,6 +114,12 @@ export class Api {
 			);
 		}
 		return (await res.json()) as T;
+	}
+
+	/** For <img src> and anything else that cannot carry a header. */
+	url(path: string): string {
+		const sep = path.includes("?") ? "&" : "?";
+		return `${this.base}${path}${this.token ? `${sep}t=${this.token}` : ""}`;
 	}
 
 	state = () => this.#json<AppState>("/api/state");
@@ -82,10 +135,7 @@ export class Api {
 	testConnection = (connectionId: string) =>
 		this.#json<{ status: string; detail: string; label: string }>(
 			"/api/connections/test",
-			{
-				method: "POST",
-				body: JSON.stringify({ connectionId }),
-			},
+			{ method: "POST", body: JSON.stringify({ connectionId }) },
 		);
 
 	saveCredentials = (body: {
@@ -118,10 +168,7 @@ export class Api {
 	reportSettings = (body: { connectionId: string; reportId: number }) =>
 		this.#json<{ ok: boolean; settings?: ReportSetting[]; message?: string }>(
 			"/api/report-settings",
-			{
-				method: "POST",
-				body: JSON.stringify(body),
-			},
+			{ method: "POST", body: JSON.stringify(body) },
 		);
 
 	reportParams = (body: {
@@ -243,29 +290,55 @@ export class Api {
 			body: JSON.stringify({ modelId }),
 		});
 
-	/**
-	 * The page raster as a local file path plus its real pixel size.
-	 *
-	 * Zooming re-requests at a higher DPI rather than scaling a bitmap, so a zoomed page
-	 * gains real resolution instead of enlarging pixels.
-	 */
-	pageRaster = (layoutId: string, page: number, dpi: number) =>
-		this.#json<{
-			path: string;
-			widthPx: number;
-			heightPx: number;
-			dpi: number;
-		}>(`/api/page-path/${layoutId}?page=${page}&dpi=${dpi}`);
+	destroySession = (id: string) =>
+		this.#json<unknown>(`/api/sessions/${id}`, { method: "DELETE" });
 
+	/**
+	 * A rendered page as an image URL. The browser decodes it; zooming re-requests at a
+	 * higher DPI rather than scaling a bitmap, so a zoomed page gains real resolution.
+	 */
+	pageUrl = (layoutId: string, page: number, dpi: number) =>
+		this.url(`/api/page/${layoutId}?page=${page}&dpi=${dpi}`);
+
+	pdfUrl = (layoutId: string) => this.url(`/api/pdf/${layoutId}`);
+
+	/**
+	 * The live half: render progress and agent output. Reconnects with backoff, because
+	 * a silently dead socket looks exactly like an app that has stopped working — but a
+	 * fixed retry against a server that is refusing us just spams the console forever.
+	 */
 	connect(onMessage: (m: ServerMessage) => void): () => void {
-		const ws = new WebSocket(`${this.base.replace(/^http/, "ws")}/ws`);
-		ws.onmessage = (e) => {
-			try {
-				onMessage(JSON.parse(String(e.data)) as ServerMessage);
-			} catch {
-				/* ignore malformed frames */
-			}
+		let ws: WebSocket | null = null;
+		let closed = false;
+		let attempt = 0;
+		let retry: ReturnType<typeof setTimeout> | undefined;
+
+		const open = () => {
+			if (closed) return;
+			const wsBase = this.base.replace(/^http/, "ws");
+			ws = new WebSocket(`${wsBase}/ws${this.token ? `?t=${this.token}` : ""}`);
+			ws.onopen = () => {
+				attempt = 0;
+			};
+			ws.onmessage = (e) => {
+				try {
+					onMessage(JSON.parse(String(e.data)) as ServerMessage);
+				} catch {
+					/* a malformed frame is not worth tearing the socket down for */
+				}
+			};
+			ws.onclose = () => {
+				if (closed) return;
+				attempt += 1;
+				retry = setTimeout(open, Math.min(1000 * 2 ** (attempt - 1), 30_000));
+			};
 		};
-		return () => ws.close();
+		open();
+
+		return () => {
+			closed = true;
+			if (retry) clearTimeout(retry);
+			ws?.close();
+		};
 	}
 }

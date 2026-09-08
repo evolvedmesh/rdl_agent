@@ -1,6 +1,6 @@
 {
 	"compilerOptions": {
-		"lib": ["ESNext"],
+		"lib": ["ESNext", "DOM", "DOM.Iterable"],
 		"target": "ESNext",
 		"module": "Preserve",
 		"moduleDetection": "force",
@@ -16,7 +16,7 @@
 		"noImplicitOverride": true,
 		"types": ["bun"],
 		"jsx": "react-jsx",
-		"jsxImportSource": "@gpuix/react",
+		"jsxImportSource": "react",
 		"paths": {
 			"@layout/core": ["./packages/core/src/index.ts"],
 			"@layout/feedback": ["./packages/feedback/src/index.ts"],
@@ -30,6 +30,9 @@
 		"packages/**/*.tsx",
 		"apps/**/*.ts",
 		"apps/**/*.tsx",
-		"spikes/**/*.ts"
+		"apps/**/*.d.ts",
+		"scripts/**/*.ts",
+		"spikes/**/*.ts",
+		"*.config.ts"
 	]
 }
