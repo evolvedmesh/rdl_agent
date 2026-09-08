@@ -339,35 +339,41 @@ jobs:
         shell: bash
         run: |
           out="rdl-agent-${{ matrix.id }}"
-          cat > "$out/README.md" <<'EOF'
+          # macOS wraps the launcher in a native .app bundle (Contents/MacOS/); Linux
+          # and Windows ship it at the top of app/bin/ instead.
+          launcher="app/bin/launcher"
+          if [ "${{ matrix.id }}" = "macos-arm64" ]; then
+            launcher="app/Contents/MacOS/launcher"
+          fi
+          cat > "$out/README.md" <<EOF
           # RDL Agent
 
-          `app/` is the Electrobun bundle. Launch the desktop app with:
+          \`app/\` is the Electrobun bundle. Launch the desktop app with:
 
-              ./app/bin/launcher
+              ./$launcher
 
           The same bundle is also the headless core and the per-session MCP proxy —
           but the app itself invokes these automatically (an agent session spawns the
-          shim; there is no reason to run `serve` by hand unless you are driving the
+          shim; there is no reason to run \`serve\` by hand unless you are driving the
           app from a browser instead of the window). If you do need to, run the
-          launcher once first — `app/bin/` only holds the installer, not the runtime —
+          launcher once first — it only installs the runtime, it does not contain it —
           then use the path it prints for the installed copy:
 
-              ./app/bin/launcher                                       # installs, then opens the window
+              ./$launcher                                              # installs, then opens the window
               <installed-dir>/bin/bun <installed-dir>/Resources/app/bun/index.js serve
               <installed-dir>/bin/bun <installed-dir>/Resources/app/bun/index.js mcp-shim --stdio --session <id>
 
-          `tools/` holds poppler-utils + ImageMagick with their libraries vendored. It
+          \`tools/\` holds poppler-utils + ImageMagick with their libraries vendored. It
           is only found automatically while running directly out of this extracted
           folder — once the launcher installs the app elsewhere, point it at these
           tools explicitly:
 
-              export LAYOUT_TOOLS_DIR="$(pwd)/tools"     # keep this folder; don't delete it after installing
+              export LAYOUT_TOOLS_DIR="\$(pwd)/tools"     # keep this folder; don't delete it after installing
 
-          or simply install poppler-utils + ImageMagick 7 (the `magick` command, not
-          ImageMagick 6) system-wide instead. On Linux `tools/magick` is ImageMagick's
+          or simply install poppler-utils + ImageMagick 7 (the \`magick\` command, not
+          ImageMagick 6) system-wide instead. On Linux \`tools/magick\` is ImageMagick's
           portable AppImage — if your box has no FUSE, export
-          `APPIMAGE_EXTRACT_AND_RUN=1` before launching.
+          \`APPIMAGE_EXTRACT_AND_RUN=1\` before launching.
 
           On Linux the app itself additionally needs gtk3, webkit2gtk-4.1,
           libayatana-appindicator and librsvg from your distribution; the launcher names
@@ -392,8 +398,17 @@ jobs:
           set -euo pipefail
           out="rdl-agent-${{ matrix.id }}"
 
-          payload="$(find "$out/app/Resources" -maxdepth 1 -name '*.tar.zst' | head -1)"
-          [ -n "$payload" ] || { echo "no compressed payload in $out/app/Resources"; ls -la "$out/app/Resources"; exit 1; }
+          # macOS wraps the same self-extracting payload in a native .app bundle
+          # (Contents/MacOS/, Contents/Resources/) instead of the flat bin/ + Resources/
+          # tree Linux and Windows use — the inner extracted runtime shape is identical
+          # either way, only this outer path differs.
+          resources="$out/app/Resources"
+          if [ "${{ matrix.id }}" = "macos-arm64" ]; then
+            resources="$out/app/Contents/Resources"
+          fi
+
+          payload="$(find "$resources" -maxdepth 1 -name '*.tar.zst' | head -1)"
+          [ -n "$payload" ] || { echo "no compressed payload in $resources"; ls -la "$resources"; exit 1; }
           extracted="$(mktemp -d)"
           tar --zstd -xf "$payload" -C "$extracted"
           runtime="$(find "$extracted" -mindepth 1 -maxdepth 1 -type d | head -1)"
