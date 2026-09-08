@@ -1,3 +1,18 @@
+## [1.0.0-dev.1](https://github.com/evolvedmesh/rdl_agent/compare/v0.1.0-dev.5...v1.0.0-dev.1) (2026-09-08)
+
+### ⚠ BREAKING CHANGES
+
+* rewrite desktop app to use eletrobun instead of gpuix
+
+### Features
+
+* rewrite desktop app to use eletrobun instead of gpuix ([51e6800](https://github.com/evolvedmesh/rdl_agent/commit/51e6800e7a285af8b21f04e635e180b811135fde))
+
+### Bug Fixes
+
+* **release:** pin conventional-changelog-conventionalcommits to a writer-compatible version ([4c4b944](https://github.com/evolvedmesh/rdl_agent/commit/4c4b9449a01a59549019f1e02e36344f13525c9b))
+* **release:** recognize the ! breaking-change shorthand in commit messages ([1bb9843](https://github.com/evolvedmesh/rdl_agent/commit/1bb9843983b44f90f163443173974e20364ec62a))
+
 # [0.1.0-dev.5](https://github.com/evolvedmesh/rdl_agent/compare/v0.1.0-dev.4...v0.1.0-dev.5) (2026-09-07)
 
 
