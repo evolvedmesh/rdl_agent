@@ -1,3 +1,13 @@
+## [1.0.0-dev.2](https://github.com/evolvedmesh/rdl_agent/compare/v1.0.0-dev.1...v1.0.0-dev.2) (2026-09-08)
+
+### Bug Fixes
+
+* **release:** trigger patch releases for style and refactor commits ([c207d92](https://github.com/evolvedmesh/rdl_agent/commit/c207d92b0f6d20f7fa4540712b46ac777500b1f5))
+
+### Styles
+
+* fix biome formatting in .releaserc.json ([d7b5dfd](https://github.com/evolvedmesh/rdl_agent/commit/d7b5dfd8a10244f0996cb32a0a20b618919fe322))
+
 ## [1.0.0-dev.1](https://github.com/evolvedmesh/rdl_agent/compare/v0.1.0-dev.5...v1.0.0-dev.1) (2026-09-08)
 
 ### ⚠ BREAKING CHANGES
