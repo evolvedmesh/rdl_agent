@@ -1,3 +1,9 @@
+## [1.0.0-dev.5](https://github.com/evolvedmesh/rdl_agent/compare/v1.0.0-dev.4...v1.0.0-dev.5) (2026-09-08)
+
+### Bug Fixes
+
+* **build:** update macOS launcher and resource paths in build workflow ([0dec8fa](https://github.com/evolvedmesh/rdl_agent/commit/0dec8fae440d17c8b7fa909c3a4ddcbce97b6bdb))
+
 ## [1.0.0-dev.4](https://github.com/evolvedmesh/rdl_agent/compare/v1.0.0-dev.3...v1.0.0-dev.4) (2026-09-08)
 
 ### Bug Fixes
