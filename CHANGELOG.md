@@ -1,3 +1,9 @@
+## [1.0.0-dev.4](https://github.com/evolvedmesh/rdl_agent/compare/v1.0.0-dev.3...v1.0.0-dev.4) (2026-09-08)
+
+### Bug Fixes
+
+* **build:** resolve macOS .app bundle paths in smoke test and README ([e8c995e](https://github.com/evolvedmesh/rdl_agent/commit/e8c995e160c7cac3324e14971e0a47bf445ef7e7))
+
 ## [1.0.0-dev.3](https://github.com/evolvedmesh/rdl_agent/compare/v1.0.0-dev.2...v1.0.0-dev.3) (2026-09-08)
 
 ### Bug Fixes
