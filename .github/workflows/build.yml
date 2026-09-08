@@ -339,11 +339,16 @@ jobs:
         shell: bash
         run: |
           out="rdl-agent-${{ matrix.id }}"
-          # macOS wraps the launcher in a native .app bundle (Contents/MacOS/); Linux
-          # and Windows ship it at the top of app/bin/ instead.
+          # macOS wraps the launcher in a native .app bundle (Contents/MacOS/,
+          # Contents/Resources/); Linux and Windows ship it as a flat bin/ + Resources/
+          # tree. The installed copy the launcher unpacks has the same platform shape.
           launcher="app/bin/launcher"
+          bindir="bin"
+          resdir="Resources"
           if [ "${{ matrix.id }}" = "macos-arm64" ]; then
             launcher="app/Contents/MacOS/launcher"
+            bindir="Contents/MacOS"
+            resdir="Contents/Resources"
           fi
           cat > "$out/README.md" <<EOF
           # RDL Agent
@@ -360,8 +365,8 @@ jobs:
           then use the path it prints for the installed copy:
 
               ./$launcher                                              # installs, then opens the window
-              <installed-dir>/bin/bun <installed-dir>/Resources/app/bun/index.js serve
-              <installed-dir>/bin/bun <installed-dir>/Resources/app/bun/index.js mcp-shim --stdio --session <id>
+              <installed-dir>/$bindir/bun <installed-dir>/$resdir/app/bun/index.js serve
+              <installed-dir>/$bindir/bun <installed-dir>/$resdir/app/bun/index.js mcp-shim --stdio --session <id>
 
           \`tools/\` holds poppler-utils + ImageMagick with their libraries vendored. It
           is only found automatically while running directly out of this extracted
@@ -399,12 +404,18 @@ jobs:
           out="rdl-agent-${{ matrix.id }}"
 
           # macOS wraps the same self-extracting payload in a native .app bundle
-          # (Contents/MacOS/, Contents/Resources/) instead of the flat bin/ + Resources/
-          # tree Linux and Windows use — the inner extracted runtime shape is identical
-          # either way, only this outer path differs.
+          # instead of the flat bin/ + Resources/ tree Linux and Windows use — and this
+          # is true of BOTH the outer wrapper and the runtime that self-extracts out of
+          # it: on macOS the payload unpacks to `<name>.app/Contents/{MacOS,Resources}/`,
+          # elsewhere to `<name>/{bin,Resources}/`. So the bun binary and the main-process
+          # entry both sit one layout deeper on macOS.
           resources="$out/app/Resources"
+          bindir="bin"
+          resdir="Resources"
           if [ "${{ matrix.id }}" = "macos-arm64" ]; then
             resources="$out/app/Contents/Resources"
+            bindir="Contents/MacOS"
+            resdir="Contents/Resources"
           fi
 
           payload="$(find "$resources" -maxdepth 1 -name '*.tar.zst' | head -1)"
@@ -422,8 +433,11 @@ jobs:
           #
           # Invoking the bundled runtime directly is also the real test of the shim
           # path: it is exactly what Session.mcpServerConfig() spawns.
+          bun_bin="$runtime/$bindir/bun"
+          app_entry="$runtime/$resdir/app/bun/index.js"
+          [ -x "$bun_bin" ] || { echo "no bun binary at $bun_bin"; find "$runtime" -maxdepth 3; exit 1; }
           LAYOUT_DATA_DIR="$(mktemp -d)" LAYOUT_ALLOW_PLAINTEXT_SECRET=1 LAYOUT_NO_AUTH=1 \
-            "$runtime/bin/bun" "$runtime/Resources/app/bun/index.js" serve > serve.log 2>&1 &
+            "$bun_bin" "$app_entry" serve > serve.log 2>&1 &
           pid=$!
           port=""
           for _ in $(seq 1 30); do
