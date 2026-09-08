@@ -1,3 +1,9 @@
+## [1.0.0-dev.3](https://github.com/evolvedmesh/rdl_agent/compare/v1.0.0-dev.2...v1.0.0-dev.3) (2026-09-08)
+
+### Bug Fixes
+
+* **release:** reformat .releaserc.json with biome ([9c477ad](https://github.com/evolvedmesh/rdl_agent/commit/9c477ad35f21c1aad2e2a3e644fe1e9bc0ee0799))
+
 ## [1.0.0-dev.2](https://github.com/evolvedmesh/rdl_agent/compare/v1.0.0-dev.1...v1.0.0-dev.2) (2026-09-08)
 
 ### Bug Fixes

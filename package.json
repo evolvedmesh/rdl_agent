@@ -1,6 +1,6 @@
 {
 	"name": "rdl-agent-workspace",
-	"version": "1.0.0-dev.2",
+	"version": "1.0.0-dev.3",
 	"private": true,
 	"type": "module",
 	"workspaces": [
