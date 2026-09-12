@@ -37,9 +37,9 @@
 		"fix": "biome format ./ --write && biome check ./ --write",
 		"release": "semantic-release",
 		"release:dry": "semantic-release --dry-run --no-ci",
-		"build": "bun run ui && hutch electrobun build --env=stable",
-		"build:canary": "bun run ui && hutch electrobun build --env=canary",
-		"build:dev": "bun run ui && hutch electrobun build --env=dev"
+		"build": "bun run ui && electrobun build --env=stable",
+		"build:canary": "bun run ui && electrobun build --env=canary",
+		"build:dev": "bun run ui && electrobun build --env=dev"
 	},
 	"//build": "One bundle IS the whole app. Electrobun packages a Bun runtime at <app>/bin/bun and the main process at <app>/Resources/app/bun/index.js, so `<app> serve` and the per-session `mcp-shim` are reached by re-execing process.execPath against Bun.main — neither loads the native window wrapper, so both run headless. The UI is built by Vite (Hutch cannot serialise the Tailwind plugin across its config boundary) into apps/desktop/dist and copied to views/mainview, then served by the app's own loopback server so UI and API share an origin. Still needs poppler-utils + ImageMagick for PDF text/raster feedback — off PATH, or via $LAYOUT_TOOLS_DIR. Hutch does not cross-compile: run the build on a native runner per target. Linux additionally needs gtk3, webkit2gtk-4.1, libayatana-appindicator and librsvg at runtime.",
 	"dependencies": {

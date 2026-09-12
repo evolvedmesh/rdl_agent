@@ -46,7 +46,7 @@ export class SecretToolStore implements SecretStore {
 	readonly description = "OS keychain (libsecret)";
 
 	static async available(): Promise<boolean> {
-		return (await run(["sh", "-c", "command -v secret-tool"])).code === 0;
+		return process.platform === "linux" && Bun.which("secret-tool") !== null;
 	}
 
 	async get(): Promise<string | null> {
@@ -81,6 +81,56 @@ export class SecretToolStore implements SecretStore {
 
 	async delete(): Promise<void> {
 		await run(["secret-tool", "clear", "service", SERVICE, "account", ACCOUNT]);
+	}
+}
+
+/** Windows DPAPI, scoped to the current user. The encrypted blob is safe to keep in the data dir. */
+export class WindowsDpapiStore implements SecretStore {
+	readonly description = "Windows Data Protection API";
+
+	constructor(private readonly path: string) {}
+
+	async get(): Promise<string | null> {
+		const file = Bun.file(this.path);
+		if (!(await file.exists())) return null;
+		const encrypted = await file.text();
+		const script =
+			"Add-Type -AssemblyName System.Security;" +
+			"$c=[Console]::In.ReadToEnd();" +
+			"$b=[Convert]::FromBase64String($c);" +
+			"$p=[Security.Cryptography.ProtectedData]::Unprotect($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser);" +
+			"[Console]::Out.Write([Text.Encoding]::UTF8.GetString($p))";
+		const result = await run(
+			["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+			encrypted,
+		);
+		if (result.code !== 0)
+			throw new Error(
+				`Windows could not decrypt the stored client secret: ${result.stderr.trim()}`,
+			);
+		return result.stdout;
+	}
+
+	async set(secret: string): Promise<void> {
+		const script =
+			"Add-Type -AssemblyName System.Security;" +
+			"$s=[Console]::In.ReadToEnd();" +
+			"$b=[Text.Encoding]::UTF8.GetBytes($s);" +
+			"$p=[Security.Cryptography.ProtectedData]::Protect($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser);" +
+			"[Console]::Out.Write([Convert]::ToBase64String($p))";
+		const result = await run(
+			["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+			secret,
+		);
+		if (result.code !== 0)
+			throw new Error(
+				`Windows could not encrypt the client secret: ${result.stderr.trim()}`,
+			);
+		await Bun.write(this.path, result.stdout);
+	}
+
+	async delete(): Promise<void> {
+		await Bun.file(this.path).delete();
 	}
 }
 
@@ -197,6 +247,9 @@ export class MemorySecretStore implements SecretStore {
 export async function defaultSecretStore(
 	fallbackPath?: string,
 ): Promise<SecretStore> {
+	if (process.platform === "win32" && fallbackPath) {
+		return new WindowsDpapiStore(fallbackPath);
+	}
 	if (await SecurityStore.available()) return new SecurityStore();
 	if (await SecretToolStore.available()) return new SecretToolStore();
 	if (fallbackPath && process.env.LAYOUT_ALLOW_PLAINTEXT_SECRET === "1") {
