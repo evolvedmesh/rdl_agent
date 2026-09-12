@@ -16,7 +16,7 @@ if ((await vite.exited) !== 0) process.exit(1);
 const args = process.argv.slice(2);
 const app = Bun.spawn(
 	[
-		"hutch",
+		"bunx",
 		"electrobun",
 		"dev",
 		...(args.includes("--watch") ? ["--watch"] : []),

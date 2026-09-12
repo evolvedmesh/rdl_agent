@@ -85,12 +85,10 @@ export type DetectedProvider = Provider & {
 };
 
 async function which(bin: string): Promise<string | null> {
-	const proc = Bun.spawn(["sh", "-c", `command -v ${bin}`], {
-		stdout: "pipe",
-		stderr: "ignore",
-	});
-	const out = await new Response(proc.stdout).text();
-	return (await proc.exited) === 0 && out.trim() ? out.trim() : null;
+	// Shelling out to `command -v` makes provider discovery require a POSIX shell,
+	// which a normal Windows installation does not have. Bun already applies the
+	// host's executable lookup rules, including PATHEXT on Windows.
+	return Bun.which(bin);
 }
 
 /** Exit status of `<bin> --version`, as a cheap "does this actually run" probe. */
