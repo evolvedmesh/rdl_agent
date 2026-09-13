@@ -164,10 +164,30 @@ jobs:
 
       # Vite owns the view build (Hutch cannot serialise the Tailwind plugin), then
       # `hutch electrobun build` packages the main process and copies the dist in.
+      #
+      # `hutch electrobun build` fetches Electrobun's runtime artifacts (e.g. the
+      # Cottontail runtime binary) from its CDN, and a transient DNS blip there
+      # (`could not resolve Cottontail: NameServerFailure`) has failed an otherwise-good
+      # build before — retry a few times rather than fail the whole matrix leg on one
+      # flaky lookup. `shell: bash` so the retry loop is identical across all three
+      # runners (Windows runners ship Git Bash for this).
       - name: Build the app bundle
+        shell: bash
         run: |
+          set -euo pipefail
           bun run ui
-          hutch electrobun build --env=stable
+
+          attempt=1
+          max_attempts=3
+          until hutch electrobun build --env=stable; do
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "hutch electrobun build failed after $max_attempts attempts" >&2
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            echo "hutch electrobun build failed; retrying (attempt $attempt/$max_attempts) in 10s..." >&2
+            sleep 10
+          done
 
       # --- vendor poppler + ImageMagick into the bundle's tools/ --------------------
       # resolveTool() (packages/feedback/src/bin.ts) looks for these in a `tools/` beside
