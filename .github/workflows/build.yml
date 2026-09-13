@@ -169,9 +169,14 @@ jobs:
       # Cottontail runtime binary) from its CDN, and a transient DNS blip there
       # (`could not resolve Cottontail: NameServerFailure`) has failed an otherwise-good
       # build before — retry a few times rather than fail the whole matrix leg on one
-      # flaky lookup. `shell: bash` so the retry loop is identical across all three
-      # runners (Windows runners ship Git Bash for this).
-      - name: Build the app bundle
+      # flaky lookup.
+      #
+      # Windows gets its own step rather than sharing this one under `shell: bash`:
+      # Git Bash puts its own GNU tar ahead of Windows' bsdtar on PATH, and GNU tar reads
+      # a downloaded `D:\...` path as a `host:file` remote-shell target — failing every
+      # attempt with "tar: Cannot connect to D: resolve failed", never a real retry.
+      - name: Build the app bundle (Linux/macOS)
+        if: matrix.id != 'windows-x64'
         shell: bash
         run: |
           set -euo pipefail
@@ -188,6 +193,24 @@ jobs:
             echo "hutch electrobun build failed; retrying (attempt $attempt/$max_attempts) in 10s..." >&2
             sleep 10
           done
+
+      - name: Build the app bundle (Windows)
+        if: matrix.id == 'windows-x64'
+        shell: pwsh
+        run: |
+          bun run ui
+
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            hutch electrobun build --env=stable
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -ge $maxAttempts) {
+              Write-Error "hutch electrobun build failed after $maxAttempts attempts"
+              exit 1
+            }
+            Write-Warning "hutch electrobun build failed; retrying (attempt $($attempt + 1)/$maxAttempts) in 10s..."
+            Start-Sleep -Seconds 10
+          }
 
       # --- vendor poppler + ImageMagick into the bundle's tools/ --------------------
       # resolveTool() (packages/feedback/src/bin.ts) looks for these in a `tools/` beside
