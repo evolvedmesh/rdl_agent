@@ -1,3 +1,9 @@
+## [1.0.0-dev.6](https://github.com/evolvedmesh/rdl_agent/compare/v1.0.0-dev.5...v1.0.0-dev.6) (2026-09-13)
+
+### Bug Fixes
+
+* **windows:** support native build and runtime ([d9d16a7](https://github.com/evolvedmesh/rdl_agent/commit/d9d16a70fcb6a6f0a6e2a9066c4188c9011bd2fb))
+
 ## [1.0.0-dev.5](https://github.com/evolvedmesh/rdl_agent/compare/v1.0.0-dev.4...v1.0.0-dev.5) (2026-09-08)
 
 ### Bug Fixes
