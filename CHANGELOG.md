@@ -1,3 +1,9 @@
+## [1.0.0-dev.7](https://github.com/evolvedmesh/rdl_agent/compare/v1.0.0-dev.6...v1.0.0-dev.7) (2026-09-13)
+
+### Bug Fixes
+
+* **build:** retry hutch electrobun build on transient DNS failure ([8a33774](https://github.com/evolvedmesh/rdl_agent/commit/8a337747d09e24079cdd825240d966652ae784c1))
+
 ## [1.0.0-dev.6](https://github.com/evolvedmesh/rdl_agent/compare/v1.0.0-dev.5...v1.0.0-dev.6) (2026-09-13)
 
 ### Bug Fixes
