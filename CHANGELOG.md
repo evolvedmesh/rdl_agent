@@ -1,3 +1,9 @@
+## [1.0.0-dev.8](https://github.com/evolvedmesh/rdl_agent/compare/v1.0.0-dev.7...v1.0.0-dev.8) (2026-09-13)
+
+### Bug Fixes
+
+* **build:** use a native PowerShell retry loop for the Windows build ([f2f7b92](https://github.com/evolvedmesh/rdl_agent/commit/f2f7b927788df992c892053c3dad0f2f2e0ea3c7))
+
 ## [1.0.0-dev.7](https://github.com/evolvedmesh/rdl_agent/compare/v1.0.0-dev.6...v1.0.0-dev.7) (2026-09-13)
 
 ### Bug Fixes
