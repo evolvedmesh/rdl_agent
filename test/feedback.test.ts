@@ -307,7 +307,10 @@ describe("external tool resolution", () => {
 		const dir = tmp();
 		// Novel names: resolveTool memoises, and the real poppler/magick names are
 		// already resolved off PATH by the time this runs.
-		const bundled = join(dir, "fake-pdf-tool");
+		const bundled = join(
+			dir,
+			`fake-pdf-tool${process.platform === "win32" ? ".exe" : ""}`,
+		);
 		await Bun.write(bundled, "#!/bin/sh\n");
 
 		const prev = process.env.LAYOUT_TOOLS_DIR;

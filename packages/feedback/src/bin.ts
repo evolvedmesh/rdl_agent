@@ -14,7 +14,7 @@
  * dropping poppler in there would mix our payload into theirs.
  */
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 
 const EXE = process.platform === "win32" ? ".exe" : "";
 const cache = new Map<string, string>();
@@ -32,6 +32,11 @@ function candidates(name: string): string[] {
 		join(selfDir, "tools", file),
 		join(selfDir, "..", "tools", file),
 	);
+	// Bun.spawn does not consistently apply PATHEXT when resolving a bare command on
+	// Windows (notably for WinGet-installed Poppler), so resolve PATH ourselves.
+	for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+		if (dir) out.push(join(dir, file));
+	}
 	return out;
 }
 
